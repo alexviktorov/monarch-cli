@@ -218,8 +218,13 @@ const mutationCreateTag = `mutation Common_CreateTransactionTag($input: CreateTr
   }
 }`
 
-// Create creates a transaction tag (color optional, e.g. "#e11d21").
-// Requires WithWritesEnabled.
+// defaultTagColor is used when the caller doesn't pick one: the API
+// REQUIRES color in CreateTransactionTagInput (verified live 2026-08-09 —
+// omitting it is a 400).
+const defaultTagColor = "#3b82f6"
+
+// Create creates a transaction tag (color e.g. "#e11d21"; a default is
+// supplied when empty). Requires WithWritesEnabled.
 func (s *TagsService) Create(ctx context.Context, name, color string) (*Tag, error) {
 	if err := s.c.requireWrites(); err != nil {
 		return nil, err
@@ -227,10 +232,10 @@ func (s *TagsService) Create(ctx context.Context, name, color string) (*Tag, err
 	if name == "" {
 		return nil, errors.New("monarch: CreateTag: name required")
 	}
-	input := map[string]any{"name": name}
-	if color != "" {
-		input["color"] = color
+	if color == "" {
+		color = defaultTagColor
 	}
+	input := map[string]any{"name": name, "color": color}
 	var out struct {
 		CreateTransactionTag struct {
 			Tag    *Tag          `json:"tag"`

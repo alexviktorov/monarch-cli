@@ -41,7 +41,7 @@ const queryCashflow = `query Web_GetCashFlowPage($filters: TransactionFilterInpu
     groupBy { category { id name } }
     summary { sum }
   }
-  byMerchant: aggregates(filters: $filters, groupBy: ["merchant"], limit: 50) {
+  byMerchant: aggregates(filters: $filters, groupBy: ["merchant"]) {
     groupBy { merchant { id name } }
     summary { sum }
   }

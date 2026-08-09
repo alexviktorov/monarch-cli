@@ -222,6 +222,25 @@ func TestTagsCreate(t *testing.T) {
 	}
 }
 
+func TestTagsCreateDefaultsColor(t *testing.T) {
+	// The API requires color in CreateTransactionTagInput; an empty color
+	// must be replaced with the default, never omitted.
+	var vars map[string]any
+	c := writesClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req gqlRequest
+		mustDecode(t, r, &req)
+		vars = req.Variables
+		w.Write([]byte(`{"data":{"createTransactionTag":{"tag":{"id":"g1","name":"x"},"errors":[]}}}`))
+	}))
+	if _, err := c.Tags.Create(context.Background(), "x", ""); err != nil {
+		t.Fatal(err)
+	}
+	input, _ := vars["input"].(map[string]any)
+	if input["color"] != defaultTagColor {
+		t.Errorf("color = %v, want the default %s", input["color"], defaultTagColor)
+	}
+}
+
 func TestTagsCreateGated(t *testing.T) {
 	c := authedClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("gated write must not reach the network")

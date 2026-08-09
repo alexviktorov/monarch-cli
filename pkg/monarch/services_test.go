@@ -67,8 +67,8 @@ func TestAccountsList(t *testing.T) {
 func TestAccountsSnapshots(t *testing.T) {
 	var vars map[string]any
 	c := gqlServer(t, "GetSnapshotsByAccountType", `{"snapshotsByAccountType":[
-		{"month":"2026-07-01","accountType":"depository","sum":5000},
-		{"month":"2026-07-01","accountType":"credit","sum":-800}
+		{"month":"2026-07-01","accountType":"depository","balance":5000},
+		{"month":"2026-07-01","accountType":"credit","balance":-800}
 	]}`, &vars)
 	snaps, err := c.Accounts.GetSnapshots(context.Background(), SnapshotParams{
 		StartDate: date("2025-08-01"),

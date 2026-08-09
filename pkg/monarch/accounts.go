@@ -69,7 +69,7 @@ const queryGetSnapshots = `query GetSnapshotsByAccountType($startDate: Date!, $t
   snapshotsByAccountType(startDate: $startDate, timeframe: $timeframe) {
     month
     accountType
-    sum
+    balance
   }
 }`
 
@@ -120,7 +120,7 @@ func (s *AccountsService) GetSnapshots(ctx context.Context, p SnapshotParams) ([
 		Snapshots []struct {
 			Month       string  `json:"month"`
 			AccountType string  `json:"accountType"`
-			Sum         float64 `json:"sum"`
+			Balance     float64 `json:"balance"`
 		} `json:"snapshotsByAccountType"`
 	}
 	if err := s.c.doGraphQL(ctx, "GetSnapshotsByAccountType", queryGetSnapshots, vars, &out); err != nil {
@@ -128,7 +128,7 @@ func (s *AccountsService) GetSnapshots(ctx context.Context, p SnapshotParams) ([
 	}
 	snaps := make([]*AccountSnapshot, 0, len(out.Snapshots))
 	for _, sn := range out.Snapshots {
-		snaps = append(snaps, &AccountSnapshot{Month: sn.Month, Type: sn.AccountType, TotalValue: sn.Sum})
+		snaps = append(snaps, &AccountSnapshot{Month: sn.Month, Type: sn.AccountType, TotalValue: sn.Balance})
 	}
 	return snaps, nil
 }

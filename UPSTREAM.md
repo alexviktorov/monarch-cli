@@ -70,4 +70,4 @@ changed — our commit re-implementing it.
 
 | Date | Upstream ref | What Monarch changed | Our commit |
 |---|---|---|---|
-| — | — | — | — |
+| 2026-08-09 | (observed directly in live smoke; server 400s with query locations) | `snapshotsByAccountType` field `sum` renamed to `balance`; `aggregates` no longer accepts a `limit` argument; `CreateTransactionTagInput.color` is REQUIRED (every upstream catalog still shows the old shapes) | fix in pkg/monarch accounts.go/cashflow.go/writes.go |
