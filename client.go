@@ -10,8 +10,9 @@ import (
 	"monarch-cli/pkg/monarch"
 )
 
-// defaultSessionFile is the legacy/default JSON session path
-// (~/.config/monarch/session.json).
+// defaultSessionFile is the default JSON session path: on macOS
+// ~/Library/Application Support/monarch/session.json (os.UserConfigDir),
+// on Linux ~/.config/monarch/session.json.
 func defaultSessionFile() string {
 	dir, err := os.UserConfigDir()
 	if err != nil {
@@ -19,6 +20,25 @@ func defaultSessionFile() string {
 		dir = filepath.Join(home, ".config")
 	}
 	return filepath.Join(dir, "monarch", "session.json")
+}
+
+// legacySessionCandidates lists every path an older setup may have written
+// a session to — both the platform default and the XDG-style path older
+// docs referenced.
+func legacySessionCandidates() []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(p string) {
+		if p != "" && !seen[p] {
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+	add(defaultSessionFile())
+	if home, err := os.UserHomeDir(); err == nil {
+		add(filepath.Join(home, ".config", "monarch", "session.json"))
+	}
+	return out
 }
 
 // sessionStore resolves where the session lives:
@@ -32,9 +52,14 @@ func sessionStore() (monarch.SessionStore, error) {
 	if runtime.GOOS == "darwin" {
 		store, err := monarch.NewKeychainStore()
 		if err != nil {
-			return nil, err
+			// Locked/broken keychain: degrade to the file store rather
+			// than failing confusingly at first use.
+			fmt.Fprintf(os.Stderr, "note: %v; using file store instead\n", err)
+			return monarch.NewFileStore(defaultSessionFile()), nil
 		}
-		migrateLegacySession(store, defaultSessionFile())
+		for _, legacy := range legacySessionCandidates() {
+			migrateLegacySession(store, legacy)
+		}
 		return store, nil
 	}
 	return monarch.NewFileStore(defaultSessionFile()), nil
@@ -63,10 +88,28 @@ func migrateLegacySession(store monarch.SessionStore, legacyPath string) {
 	fmt.Fprintf(os.Stderr, "note: migrated session from %s to the macOS Keychain\n", legacyPath)
 }
 
+// envOptions maps optional environment overrides to client options:
+// MONARCH_DEVICE_UUID (pin the device identity a token was issued to),
+// MONARCH_CLIENT_VERSION, MONARCH_USER_AGENT.
+func envOptions() []monarch.Option {
+	var opts []monarch.Option
+	if v := os.Getenv("MONARCH_DEVICE_UUID"); v != "" {
+		opts = append(opts, monarch.WithDeviceUUID(v))
+	}
+	if v := os.Getenv("MONARCH_CLIENT_VERSION"); v != "" {
+		opts = append(opts, monarch.WithClientVersion(v))
+	}
+	if v := os.Getenv("MONARCH_USER_AGENT"); v != "" {
+		opts = append(opts, monarch.WithUserAgent(v))
+	}
+	return opts
+}
+
 // newClient builds an authenticated client. Auth resolution order:
 //  1. MONARCH_TOKEN env var (direct bearer token)
 //  2. saved session (Keychain on macOS, session file elsewhere)
 func newClient(extra ...monarch.Option) (*monarch.Client, error) {
+	extra = append(envOptions(), extra...)
 	if tok := os.Getenv("MONARCH_TOKEN"); tok != "" {
 		return monarch.New(append([]monarch.Option{monarch.WithToken(tok)}, extra...)...)
 	}
@@ -91,5 +134,5 @@ func newClientForLogin() (*monarch.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return monarch.New(monarch.WithSessionStore(store))
+	return monarch.New(append([]monarch.Option{monarch.WithSessionStore(store)}, envOptions()...)...)
 }

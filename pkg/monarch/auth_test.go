@@ -158,6 +158,76 @@ func TestLoginMissingToken(t *testing.T) {
 	}
 }
 
+func TestLoginCaptchaRequired(t *testing.T) {
+	c := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		w.Write([]byte(`{"error_code":"CAPTCHA_REQUIRED"}`))
+	}))
+	if err := c.Auth.Login(context.Background(), "a@b.c", "pw"); !errors.Is(err, ErrCaptchaRequired) {
+		t.Fatalf("err = %v, want ErrCaptchaRequired (NOT invalid-credentials)", err)
+	}
+}
+
+func TestLoginDetailFallbackClassification(t *testing.T) {
+	cases := []struct {
+		detail string
+		want   error
+	}{
+		{"Captcha verification required", ErrCaptchaRequired},
+		{"Multi-Factor authentication code required", ErrMFARequired},
+		{"A one-time code was sent to your email", ErrEmailOTPRequired},
+	}
+	for _, tc := range cases {
+		c := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusForbidden)
+			w.Write([]byte(`{"detail":"` + tc.detail + `"}`))
+		}))
+		if err := c.Auth.Login(context.Background(), "a@b.c", "pw"); !errors.Is(err, tc.want) {
+			t.Errorf("detail %q: err = %v, want %v", tc.detail, err, tc.want)
+		}
+	}
+}
+
+func TestLoginRejectsJWTShapedToken(t *testing.T) {
+	c := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"token":"eyJhbGciOi.eyJzdWIiOi.c2lnbmF0dXJl","userId":"u"}`))
+	}))
+	err := c.Auth.Login(context.Background(), "a@b.c", "pw")
+	if err == nil {
+		t.Fatal("a JWT-shaped (short-lived features) token must be rejected")
+	}
+	if c.Session() != nil {
+		t.Error("rejected token must not be persisted as a session")
+	}
+}
+
+func TestLoginRecordsTokenExpiration(t *testing.T) {
+	c := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"token":"tok","userId":"u","tokenExpiration":"2026-08-09T12:00:00Z"}`))
+	}))
+	if err := c.Auth.Login(context.Background(), "a@b.c", "pw"); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.Session().TokenExpiration; got != "2026-08-09T12:00:00Z" {
+		t.Errorf("TokenExpiration = %q, want recorded", got)
+	}
+}
+
+func TestClientPing(t *testing.T) {
+	c := gqlServer(t, "GetIdentity", `{"me":{"id":"u1","email":"a@b.c"}}`, nil)
+	id, err := c.Ping(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id.ID != "u1" || id.Email != "a@b.c" {
+		t.Errorf("identity = %+v", id)
+	}
+	bad := gqlServer(t, "GetIdentity", `{"me":null}`, nil)
+	if _, err := bad.Ping(context.Background()); err == nil {
+		t.Error("null me must be an error")
+	}
+}
+
 func TestLoginNeverRetries(t *testing.T) {
 	var calls atomic.Int32
 	c := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

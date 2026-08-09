@@ -33,7 +33,26 @@ type keychainStore struct {
 }
 
 func NewKeychainStore() (SessionStore, error) {
-	return &keychainStore{run: runSecurity}, nil
+	k := &keychainStore{run: runSecurity}
+	if err := k.probe(); err != nil {
+		return nil, fmt.Errorf("monarch: keychain unavailable: %w", err)
+	}
+	return k, nil
+}
+
+// probe verifies the keychain is actually reachable before we commit to it:
+// a lookup must succeed (0) or cleanly report item-not-found (44). A locked
+// or broken keychain exits differently, and callers should fall back to the
+// file store instead of failing confusingly at first use.
+func (k *keychainStore) probe() error {
+	_, code, err := k.run("", "find-generic-password", "-s", keychainService, "-a", keychainAccount)
+	if err != nil {
+		return err
+	}
+	if code != 0 && code != exitItemNotFound {
+		return fmt.Errorf("security exited %d", code)
+	}
+	return nil
 }
 
 func runSecurity(stdin string, args ...string) (string, int, error) {

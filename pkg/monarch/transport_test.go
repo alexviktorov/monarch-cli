@@ -34,6 +34,7 @@ func authedClient(t *testing.T, handler http.Handler) *Client {
 func TestGraphQLRequestShape(t *testing.T) {
 	var got struct {
 		method, path, auth, platform, device, ua string
+		mclient, mversion                        string
 		body                                     gqlRequest
 	}
 	c := authedClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -42,6 +43,8 @@ func TestGraphQLRequestShape(t *testing.T) {
 		got.platform = r.Header.Get("Client-Platform")
 		got.device = r.Header.Get("device-uuid")
 		got.ua = r.Header.Get("User-Agent")
+		got.mclient = r.Header.Get("monarch-client")
+		got.mversion = r.Header.Get("monarch-client-version")
 		if err := json.NewDecoder(r.Body).Decode(&got.body); err != nil {
 			t.Errorf("decode request body: %v", err)
 		}
@@ -63,8 +66,11 @@ func TestGraphQLRequestShape(t *testing.T) {
 	if got.device != "test-device-uuid" {
 		t.Errorf("device-uuid = %q", got.device)
 	}
-	if got.ua != userAgent {
-		t.Errorf("User-Agent = %q, want %q", got.ua, userAgent)
+	if got.ua != defaultUserAgent {
+		t.Errorf("User-Agent = %q, want %q", got.ua, defaultUserAgent)
+	}
+	if got.mclient != monarchClientName || got.mversion != defaultClientVersion {
+		t.Errorf("monarch-client headers = %q/%q, want %q/%q", got.mclient, got.mversion, monarchClientName, defaultClientVersion)
 	}
 	if got.body.OperationName != "TestOp" || got.body.Query == "" {
 		t.Errorf("body = %+v, want operationName TestOp with query", got.body)
@@ -178,21 +184,44 @@ func TestGraphQLContextCancelDuringBackoff(t *testing.T) {
 	}
 }
 
-func TestWithTokenMintsDeviceUUID(t *testing.T) {
-	// A WithToken session has no stored device identity; Monarch expects a
-	// device-uuid on every request, so New must mint a stable one.
-	var got []string
-	c := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		got = append(got, r.Header.Get("device-uuid"))
+func TestWithTokenDerivesStableDeviceUUID(t *testing.T) {
+	// Monarch ties tokens to a device identity: the uuid for a token-only
+	// session must be identical across separate client constructions, not
+	// merely within one process.
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{"data":{}}`))
-	}), WithToken("tok"))
+	})
+	var uuids []string
 	for range 2 {
-		if err := c.doGraphQL(context.Background(), "Op", "query Op { x }", nil, nil); err != nil {
-			t.Fatal(err)
-		}
+		c := testClient(t, handler, WithToken("tok"))
+		uuids = append(uuids, c.session.DeviceUUID)
 	}
-	if len(got) != 2 || got[0] == "" || got[0] != got[1] {
-		t.Errorf("device-uuid headers = %v, want the same non-empty value on every request", got)
+	if uuids[0] == "" || uuids[0] != uuids[1] {
+		t.Errorf("device-uuids across constructions = %v, want identical non-empty", uuids)
+	}
+	other := testClient(t, handler, WithToken("other-tok"))
+	if other.session.DeviceUUID == uuids[0] {
+		t.Error("different tokens must not share a device identity")
+	}
+	pinned := testClient(t, handler, WithToken("tok"), WithDeviceUUID("pin-1234"))
+	if pinned.session.DeviceUUID != "pin-1234" {
+		t.Errorf("WithDeviceUUID override ignored: %s", pinned.session.DeviceUUID)
+	}
+}
+
+func TestRedirectsAreNotFollowed(t *testing.T) {
+	var hits atomic.Int32
+	c := authedClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		http.Redirect(w, r, "/elsewhere", http.StatusFound)
+	}))
+	err := c.doGraphQL(context.Background(), "Op", "query Op { x }", nil, nil)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusFound {
+		t.Fatalf("err = %v, want APIError 302 (redirects are a stop signal)", err)
+	}
+	if hits.Load() != 1 {
+		t.Errorf("hits = %d, redirect must not be followed", hits.Load())
 	}
 }
 

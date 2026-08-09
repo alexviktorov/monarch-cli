@@ -104,6 +104,22 @@ func TestKeychainSaveFailure(t *testing.T) {
 	}
 }
 
+func TestKeychainProbe(t *testing.T) {
+	for _, tc := range []struct {
+		exit int
+		ok   bool
+	}{
+		{0, true}, {exitItemNotFound, true}, {36, false}, {1, false},
+	} {
+		fake := &fakeSecurity{exit: tc.exit}
+		store := &keychainStore{run: fake.run}
+		err := store.probe()
+		if (err == nil) != tc.ok {
+			t.Errorf("probe with exit %d: err = %v, want ok=%v", tc.exit, err, tc.ok)
+		}
+	}
+}
+
 func TestKeychainDeleteIdempotent(t *testing.T) {
 	fake := &fakeSecurity{exit: exitItemNotFound}
 	store := &keychainStore{run: fake.run}

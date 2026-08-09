@@ -20,7 +20,14 @@ const (
 	graphqlPath = "/graphql"
 	loginPath   = "/auth/login/" // trailing slash matters
 
-	userAgent = "monarch-cli/1.0"
+	defaultUserAgent = "monarch-cli/1.0"
+
+	// Monarch validates the client name/version pair against a server-side
+	// minimum and can 403 stale clients. When these go stale, recapture
+	// from app.monarch.com devtools (see UPSTREAM.md → "Recapturing
+	// monarch-client-version") and bump defaultClientVersion.
+	monarchClientName    = "monarch-core-web-app-graphql"
+	defaultClientVersion = "v1.0.1668"
 
 	maxAttempts   = 4
 	maxRetryDelay = 8 * time.Second
@@ -96,7 +103,9 @@ func (c *Client) setCommonHeaders(h http.Header, deviceUUID string) {
 	h.Set("Client-Platform", "web")
 	h.Set("Origin", "https://app.monarch.com")
 	h.Set("Referer", "https://app.monarch.com/")
-	h.Set("User-Agent", userAgent)
+	h.Set("User-Agent", c.userAgent)
+	h.Set("monarch-client", monarchClientName)
+	h.Set("monarch-client-version", c.clientVersion)
 	if deviceUUID != "" {
 		h.Set("device-uuid", deviceUUID)
 	}

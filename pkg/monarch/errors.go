@@ -13,6 +13,7 @@ var (
 	ErrMFARequired      = errors.New("monarch: MFA code required")
 	ErrEmailOTPRequired = errors.New("monarch: email OTP required")
 	ErrInvalidLogin     = errors.New("monarch: invalid email or password")
+	ErrCaptchaRequired  = errors.New("monarch: Cloudflare check required — log in at app.monarch.com in a browser once, then retry")
 	ErrRateLimited      = errors.New("monarch: rate limited")
 	ErrNoSession        = errors.New("monarch: no saved session")
 	ErrWritesDisabled   = errors.New("monarch: write operations are disabled on this client")

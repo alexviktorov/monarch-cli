@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"syscall"
+	"time"
 
 	"golang.org/x/term"
 
@@ -98,12 +99,18 @@ func cmdLogin(args []string) {
 			err = client.Auth.LoginWithEmailOTP(ctx, e, password, code)
 		}
 	}
-	if err != nil {
+	switch {
+	case errors.Is(err, monarch.ErrCaptchaRequired):
+		fatal("Cloudflare requires a browser check — log in at app.monarch.com in a browser once, then retry")
+	case err != nil:
 		fatal("login failed: %v", err)
 	}
 	// The session store (Keychain on macOS) is written by the library on
 	// successful login.
 	fmt.Printf("Logged in as %s.\n", e)
+	if s := client.Session(); s != nil && s.TokenExpiration != "" {
+		fmt.Fprintf(os.Stderr, "warning: server reported a token expiry (%s) — trusted-device may not have been honored; expect to re-login\n", s.TokenExpiration)
+	}
 }
 
 func cmdLogout(args []string) {
@@ -133,5 +140,15 @@ func cmdWhoami(args []string) {
 	}
 	if !s.CreatedAt.IsZero() {
 		fmt.Printf("Session created: %s\n", s.CreatedAt.Local().Format("2006-01-02 15:04 MST"))
+	}
+	// A local session can look fine while the token is long dead — ask
+	// the server.
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if id, err := client.Ping(ctx); err != nil {
+		fmt.Printf("Server check: FAILED (%v)\n", err)
+		os.Exit(1)
+	} else {
+		fmt.Printf("Server check: OK (%s)\n", id.Email)
 	}
 }

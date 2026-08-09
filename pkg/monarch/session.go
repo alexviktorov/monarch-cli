@@ -21,6 +21,10 @@ type Session struct {
 	UserID     string    `json:"userId,omitempty"`
 	DeviceUUID string    `json:"deviceUuid"`
 	CreatedAt  time.Time `json:"createdAt,omitzero"`
+	// TokenExpiration is informational: normally empty (trusted-device
+	// tokens don't expire); set when the server reported a real expiry,
+	// which usually means trusted_device wasn't honored.
+	TokenExpiration string `json:"tokenExpiration,omitempty"`
 }
 
 // SessionStore persists a session at rest.
