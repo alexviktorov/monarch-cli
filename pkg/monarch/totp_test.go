@@ -54,9 +54,9 @@ func TestGenerateTOTPSecretNormalization(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, variant := range []string{
-		"gezdgnbvgy3tqojqgezdgnbvgy3tqojq",          // lowercase
-		"GEZD GNBV GY3T QOJQ GEZD GNBV GY3T QOJQ",   // spaced
-		rfc6238Secret + "======",                    // padded
+		"gezdgnbvgy3tqojqgezdgnbvgy3tqojq",        // lowercase
+		"GEZD GNBV GY3T QOJQ GEZD GNBV GY3T QOJQ", // spaced
+		rfc6238Secret + "======",                  // padded
 	} {
 		got, err := GenerateTOTP(variant, time.Unix(59, 0).UTC())
 		if err != nil {
