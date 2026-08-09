@@ -19,7 +19,14 @@ type Client struct {
 	store      SessionStore
 	writesOK   bool
 
-	Auth *AuthService
+	Auth         *AuthService
+	Accounts     *AccountsService
+	Transactions *TransactionsService
+	Categories   *CategoriesService
+	Budgets      *BudgetsService
+	Cashflow     *CashflowService
+	Recurring    *RecurringService
+	Tags         *TagsService
 }
 
 type Option func(*Client)
@@ -82,6 +89,13 @@ func New(opts ...Option) (*Client, error) {
 		}
 	}
 	c.Auth = &AuthService{c: c}
+	c.Accounts = &AccountsService{c: c}
+	c.Transactions = &TransactionsService{c: c}
+	c.Categories = &CategoriesService{c: c}
+	c.Budgets = &BudgetsService{c: c}
+	c.Cashflow = &CashflowService{c: c}
+	c.Recurring = &RecurringService{c: c}
+	c.Tags = &TagsService{c: c}
 	return c, nil
 }
 
