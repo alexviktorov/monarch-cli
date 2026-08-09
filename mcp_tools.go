@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"sort"
 	"time"
 
@@ -36,6 +37,16 @@ type monarchAPI interface {
 	UpdateTransaction(ctx context.Context, id string, p monarch.TransactionUpdate) error
 	SetTransactionTags(ctx context.Context, id string, tagIDs []string) error
 	CreateTag(ctx context.Context, name, color string) (*monarch.Tag, error)
+	SetTransactionSplits(ctx context.Context, id string, splits []monarch.SplitInput) (*monarch.SplitResult, error)
+	CreateTransaction(ctx context.Context, p monarch.CreateTransactionParams) (string, error)
+	SetBudgetAmount(ctx context.Context, p monarch.BudgetItemParams) (*monarch.BudgetItem, error)
+	UpdateMerchant(ctx context.Context, id string, p monarch.MerchantUpdate) (*monarch.MerchantInfo, error)
+	CreateCategory(ctx context.Context, p monarch.CategoryCreate) (*monarch.Category, error)
+	UpdateCategory(ctx context.Context, id string, p monarch.CategoryUpdate) (*monarch.Category, error)
+	DeleteCategory(ctx context.Context, id, moveToCategoryID string) error
+	CreateRule(ctx context.Context, r monarch.RuleInput) error
+	UpdateRule(ctx context.Context, id string, r monarch.RuleInput) error
+	DeleteRule(ctx context.Context, id string) error
 }
 
 type txQuery struct {
@@ -139,6 +150,46 @@ func (a *liveAPI) ListInstitutions(ctx context.Context) ([]*monarch.Credential, 
 
 func (a *liveAPI) CreateTag(ctx context.Context, name, color string) (*monarch.Tag, error) {
 	return a.c.Tags.Create(ctx, name, color)
+}
+
+func (a *liveAPI) SetTransactionSplits(ctx context.Context, id string, splits []monarch.SplitInput) (*monarch.SplitResult, error) {
+	return a.c.Transactions.SetSplits(ctx, id, splits)
+}
+
+func (a *liveAPI) CreateTransaction(ctx context.Context, p monarch.CreateTransactionParams) (string, error) {
+	return a.c.Transactions.Create(ctx, p)
+}
+
+func (a *liveAPI) SetBudgetAmount(ctx context.Context, p monarch.BudgetItemParams) (*monarch.BudgetItem, error) {
+	return a.c.Budgets.SetAmount(ctx, p)
+}
+
+func (a *liveAPI) UpdateMerchant(ctx context.Context, id string, p monarch.MerchantUpdate) (*monarch.MerchantInfo, error) {
+	return a.c.Merchants.Update(ctx, id, p)
+}
+
+func (a *liveAPI) CreateCategory(ctx context.Context, p monarch.CategoryCreate) (*monarch.Category, error) {
+	return a.c.Categories.Create(ctx, p)
+}
+
+func (a *liveAPI) UpdateCategory(ctx context.Context, id string, p monarch.CategoryUpdate) (*monarch.Category, error) {
+	return a.c.Categories.Update(ctx, id, p)
+}
+
+func (a *liveAPI) DeleteCategory(ctx context.Context, id, moveToCategoryID string) error {
+	return a.c.Categories.Delete(ctx, id, moveToCategoryID)
+}
+
+func (a *liveAPI) CreateRule(ctx context.Context, r monarch.RuleInput) error {
+	return a.c.Rules.Create(ctx, r)
+}
+
+func (a *liveAPI) UpdateRule(ctx context.Context, id string, r monarch.RuleInput) error {
+	return a.c.Rules.Update(ctx, id, r)
+}
+
+func (a *liveAPI) DeleteRule(ctx context.Context, id string) error {
+	return a.c.Rules.Delete(ctx, id)
 }
 
 func (a *liveAPI) GetSummary(ctx context.Context) (*monarch.TransactionSummary, error) {
@@ -1173,6 +1224,441 @@ func (h *toolHandlers) bulkCategorize(ctx context.Context, req *mcp.CallToolRequ
 	return nil, out, nil
 }
 
+// requireWriteMode is the defense-in-depth re-check every write handler
+// runs first (the tools are only registered when writes are on, but a
+// future registration refactor must not silently open them).
+func (h *toolHandlers) requireWriteMode() error {
+	if !h.writes {
+		return errors.New("write tools are disabled on this server")
+	}
+	return nil
+}
+
+// ---- set_transaction_splits (write) ----
+
+type splitIn struct {
+	Amount       float64 `json:"amount" jsonschema:"signed amount (expenses negative); all splits must sum to the parent transaction's amount"`
+	CategoryID   string  `json:"category_id,omitempty" jsonschema:"category id from get_categories"`
+	MerchantName string  `json:"merchant_name,omitempty"`
+	Notes        string  `json:"notes,omitempty"`
+}
+
+type setSplitsIn struct {
+	TransactionID string    `json:"transaction_id" jsonschema:"id from get_transactions"`
+	Splits        []splitIn `json:"splits" jsonschema:"FULL REPLACEMENT set; an EMPTY list clears all splits and restores the original transaction"`
+}
+
+type setSplitsOut struct {
+	TransactionID string     `json:"transaction_id"`
+	IsSplit       bool       `json:"is_split"`
+	Splits        []splitOut `json:"splits,omitempty"`
+}
+
+func (h *toolHandlers) setSplits(ctx context.Context, req *mcp.CallToolRequest, in setSplitsIn) (*mcp.CallToolResult, setSplitsOut, error) {
+	var zero setSplitsOut
+	if err := h.requireWriteMode(); err != nil {
+		return nil, zero, err
+	}
+	if in.TransactionID == "" {
+		return nil, zero, errors.New("transaction_id is required")
+	}
+	// Pre-validate the server's invariant with a helpful message: the
+	// split amounts must sum to the parent's amount.
+	if len(in.Splits) > 0 {
+		parent, err := h.api.GetTransaction(ctx, in.TransactionID)
+		if err != nil {
+			return nil, zero, err
+		}
+		var sum float64
+		for _, sp := range in.Splits {
+			sum += sp.Amount
+		}
+		if math.Round(sum*100) != math.Round(parent.Amount*100) {
+			return nil, zero, fmt.Errorf("split amounts sum to %.2f but the transaction's amount is %.2f — they must match exactly", sum, parent.Amount)
+		}
+	}
+	splits := make([]monarch.SplitInput, 0, len(in.Splits))
+	for _, sp := range in.Splits {
+		splits = append(splits, monarch.SplitInput{
+			Amount: sp.Amount, CategoryID: sp.CategoryID,
+			MerchantName: sp.MerchantName, Notes: sp.Notes,
+		})
+	}
+	res, err := h.api.SetTransactionSplits(ctx, in.TransactionID, splits)
+	if err != nil {
+		return nil, zero, err
+	}
+	h.logger.Info("write applied", "tool", "set_transaction_splits",
+		"transaction_id", in.TransactionID, "split_count", len(splits))
+	out := setSplitsOut{TransactionID: res.TransactionID, IsSplit: res.HasSplitTransactions}
+	for _, sp := range res.Splits {
+		o := splitOut{ID: sp.ID, Amount: sp.Amount, Notes: sp.Notes, Category: categoryRef(sp.Category)}
+		if sp.Merchant != nil {
+			o.Merchant = sp.Merchant.Name
+		}
+		out.Splits = append(out.Splits, o)
+	}
+	return nil, out, nil
+}
+
+// ---- create_transaction (write) ----
+
+type createTransactionIn struct {
+	AccountID    string  `json:"account_id" jsonschema:"account id from get_accounts (intended for manual accounts)"`
+	Date         string  `json:"date" jsonschema:"YYYY-MM-DD"`
+	Amount       float64 `json:"amount" jsonschema:"signed amount (expenses negative)"`
+	CategoryID   string  `json:"category_id" jsonschema:"REQUIRED by the API — id from get_categories"`
+	MerchantName string  `json:"merchant_name,omitempty"`
+	Notes        string  `json:"notes,omitempty"`
+}
+
+type createTransactionOut struct {
+	TransactionID string `json:"transaction_id"`
+}
+
+func (h *toolHandlers) createTransaction(ctx context.Context, req *mcp.CallToolRequest, in createTransactionIn) (*mcp.CallToolResult, createTransactionOut, error) {
+	var zero createTransactionOut
+	if err := h.requireWriteMode(); err != nil {
+		return nil, zero, err
+	}
+	d, err := parseToolDate(in.Date, "date")
+	if err != nil {
+		return nil, zero, err
+	}
+	id, err := h.api.CreateTransaction(ctx, monarch.CreateTransactionParams{
+		AccountID: in.AccountID, Date: d, Amount: in.Amount,
+		CategoryID: in.CategoryID, MerchantName: in.MerchantName, Notes: in.Notes,
+	})
+	if err != nil {
+		return nil, zero, err
+	}
+	h.logger.Info("write applied", "tool", "create_transaction",
+		"transaction_id", id, "account_id", in.AccountID)
+	return nil, createTransactionOut{TransactionID: id}, nil
+}
+
+// ---- set_budget_amount (write) ----
+
+type setBudgetIn struct {
+	CategoryID      string  `json:"category_id,omitempty" jsonschema:"exactly one of category_id or category_group_id is required"`
+	CategoryGroupID string  `json:"category_group_id,omitempty"`
+	Amount          float64 `json:"amount" jsonschema:"planned monthly amount; 0 clears the budget"`
+	Month           string  `json:"month,omitempty" jsonschema:"YYYY-MM (default: current month)"`
+	ApplyToFuture   bool    `json:"apply_to_future,omitempty" jsonschema:"also apply to future months"`
+}
+
+type setBudgetOut struct {
+	BudgetItemID string  `json:"budget_item_id"`
+	Amount       float64 `json:"amount"`
+	Month        string  `json:"month"`
+}
+
+func (h *toolHandlers) setBudget(ctx context.Context, req *mcp.CallToolRequest, in setBudgetIn) (*mcp.CallToolResult, setBudgetOut, error) {
+	var zero setBudgetOut
+	if err := h.requireWriteMode(); err != nil {
+		return nil, zero, err
+	}
+	start := time.Now()
+	if in.Month != "" {
+		m, err := time.Parse("2006-01", in.Month)
+		if err != nil {
+			return nil, zero, fmt.Errorf("invalid month %q: use YYYY-MM", in.Month)
+		}
+		start = m
+	}
+	start, _ = monthRange(start)
+	item, err := h.api.SetBudgetAmount(ctx, monarch.BudgetItemParams{
+		StartDate: start, CategoryID: in.CategoryID, CategoryGroupID: in.CategoryGroupID,
+		Amount: in.Amount, ApplyToFuture: in.ApplyToFuture,
+	})
+	if err != nil {
+		return nil, zero, err
+	}
+	h.logger.Info("write applied", "tool", "set_budget_amount",
+		"category_id", in.CategoryID, "category_group_id", in.CategoryGroupID, "month", start.Format("2006-01"))
+	return nil, setBudgetOut{BudgetItemID: item.ID, Amount: item.BudgetAmount, Month: start.Format("2006-01")}, nil
+}
+
+// ---- update_merchant (write) ----
+
+type updateMerchantIn struct {
+	MerchantID  string   `json:"merchant_id" jsonschema:"merchant id from get_transactions or get_cashflow"`
+	Name        *string  `json:"name,omitempty" jsonschema:"new display name; omit to leave unchanged"`
+	IsRecurring *bool    `json:"is_recurring,omitempty" jsonschema:"recurring-stream config; omit to leave unchanged"`
+	Frequency   *string  `json:"frequency,omitempty" jsonschema:"weekly|biweekly|twice_a_month|monthly|quarterly|semiannually|annually"`
+	BaseDate    *string  `json:"base_date,omitempty" jsonschema:"YYYY-MM-DD anchor date for the recurrence"`
+	RecAmount   *float64 `json:"recurring_amount,omitempty" jsonschema:"expected recurring amount (signed)"`
+	IsActive    *bool    `json:"is_active,omitempty"`
+}
+
+type updateMerchantOut struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+func (h *toolHandlers) updateMerchant(ctx context.Context, req *mcp.CallToolRequest, in updateMerchantIn) (*mcp.CallToolResult, updateMerchantOut, error) {
+	var zero updateMerchantOut
+	if err := h.requireWriteMode(); err != nil {
+		return nil, zero, err
+	}
+	if in.MerchantID == "" {
+		return nil, zero, errors.New("merchant_id is required")
+	}
+	patch := monarch.MerchantUpdate{Name: in.Name}
+	if in.IsRecurring != nil || in.Frequency != nil || in.BaseDate != nil || in.RecAmount != nil || in.IsActive != nil {
+		rec := &monarch.RecurrenceUpdate{
+			IsRecurring: in.IsRecurring, Frequency: in.Frequency,
+			Amount: in.RecAmount, IsActive: in.IsActive,
+		}
+		if in.BaseDate != nil {
+			d, err := parseToolDate(*in.BaseDate, "base_date")
+			if err != nil {
+				return nil, zero, err
+			}
+			rec.BaseDate = &d
+		}
+		patch.Recurrence = rec
+	}
+	m, err := h.api.UpdateMerchant(ctx, in.MerchantID, patch)
+	if err != nil {
+		return nil, zero, err
+	}
+	h.logger.Info("write applied", "tool", "update_merchant", "merchant_id", in.MerchantID)
+	out := updateMerchantOut{ID: in.MerchantID}
+	if m != nil {
+		out.ID, out.Name = m.ID, m.Name
+	}
+	return nil, out, nil
+}
+
+// ---- category CRUD (write) ----
+
+type createCategoryIn struct {
+	GroupID string `json:"group_id" jsonschema:"category GROUP id (get_categories shows each category's group)"`
+	Name    string `json:"name"`
+	Icon    string `json:"icon,omitempty" jsonschema:"single emoji; defaults to ❓"`
+}
+
+type categoryWriteOut struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+func (h *toolHandlers) createCategory(ctx context.Context, req *mcp.CallToolRequest, in createCategoryIn) (*mcp.CallToolResult, categoryWriteOut, error) {
+	var zero categoryWriteOut
+	if err := h.requireWriteMode(); err != nil {
+		return nil, zero, err
+	}
+	cat, err := h.api.CreateCategory(ctx, monarch.CategoryCreate{GroupID: in.GroupID, Name: in.Name, Icon: in.Icon})
+	if err != nil {
+		return nil, zero, err
+	}
+	h.logger.Info("write applied", "tool", "create_category", "category_id", cat.ID)
+	return nil, categoryWriteOut{ID: cat.ID, Name: cat.Name}, nil
+}
+
+type updateCategoryIn struct {
+	CategoryID string  `json:"category_id" jsonschema:"id from get_categories"`
+	Name       *string `json:"name,omitempty" jsonschema:"omit to leave unchanged"`
+	Icon       *string `json:"icon,omitempty" jsonschema:"omit to leave unchanged"`
+}
+
+func (h *toolHandlers) updateCategory(ctx context.Context, req *mcp.CallToolRequest, in updateCategoryIn) (*mcp.CallToolResult, categoryWriteOut, error) {
+	var zero categoryWriteOut
+	if err := h.requireWriteMode(); err != nil {
+		return nil, zero, err
+	}
+	if in.CategoryID == "" {
+		return nil, zero, errors.New("category_id is required")
+	}
+	cat, err := h.api.UpdateCategory(ctx, in.CategoryID, monarch.CategoryUpdate{Name: in.Name, Icon: in.Icon})
+	if err != nil {
+		return nil, zero, err
+	}
+	h.logger.Info("write applied", "tool", "update_category", "category_id", in.CategoryID)
+	out := categoryWriteOut{ID: in.CategoryID}
+	if cat != nil {
+		out.ID, out.Name = cat.ID, cat.Name
+	}
+	return nil, out, nil
+}
+
+type deleteCategoryIn struct {
+	CategoryID       string `json:"category_id" jsonschema:"id from get_categories"`
+	MoveToCategoryID string `json:"move_to_category_id,omitempty" jsonschema:"STRONGLY RECOMMENDED: reassign the deleted category's transactions to this category id"`
+	Confirm          bool   `json:"confirm" jsonschema:"must be true — this permanently deletes the category"`
+}
+
+type deletedOut struct {
+	Deleted bool `json:"deleted"`
+}
+
+func (h *toolHandlers) deleteCategory(ctx context.Context, req *mcp.CallToolRequest, in deleteCategoryIn) (*mcp.CallToolResult, deletedOut, error) {
+	var zero deletedOut
+	if err := h.requireWriteMode(); err != nil {
+		return nil, zero, err
+	}
+	if !in.Confirm {
+		return nil, zero, errors.New("refusing to delete without confirm:true — deletion is permanent; consider move_to_category_id to reassign its transactions")
+	}
+	if in.CategoryID == "" {
+		return nil, zero, errors.New("category_id is required")
+	}
+	if err := h.api.DeleteCategory(ctx, in.CategoryID, in.MoveToCategoryID); err != nil {
+		return nil, zero, err
+	}
+	h.logger.Info("write applied", "tool", "delete_category",
+		"category_id", in.CategoryID, "moved_to", in.MoveToCategoryID)
+	return nil, deletedOut{Deleted: true}, nil
+}
+
+// ---- rule CRUD (write) ----
+
+type ruleFieldsIn struct {
+	MerchantContains []string `json:"merchant_contains,omitempty" jsonschema:"match merchants whose name CONTAINS any of these strings"`
+	MerchantEquals   []string `json:"merchant_equals,omitempty" jsonschema:"match merchants whose name EQUALS any of these strings"`
+	AmountOperator   string   `json:"amount_operator,omitempty" jsonschema:"gt, lt, or eq"`
+	AmountValue      *float64 `json:"amount_value,omitempty" jsonschema:"absolute amount for the amount criterion"`
+	AmountIsExpense  *bool    `json:"amount_is_expense,omitempty" jsonschema:"default true"`
+	AccountIDs       []string `json:"account_ids,omitempty" jsonschema:"restrict the rule to these accounts"`
+	SetCategoryID    string   `json:"set_category_id,omitempty" jsonschema:"ACTION: category id to assign"`
+	SetMerchantName  string   `json:"set_merchant_name,omitempty" jsonschema:"ACTION: merchant NAME to assign (a name, not an id)"`
+	AddTagIDs        []string `json:"add_tag_ids,omitempty" jsonschema:"ACTION: tag ids to add"`
+	HideFromReports  *bool    `json:"hide_from_reports,omitempty" jsonschema:"ACTION: hide matching transactions from reports"`
+	ReviewStatus     string   `json:"review_status,omitempty" jsonschema:"ACTION: e.g. needs_review"`
+	ApplyToExisting  bool     `json:"apply_to_existing,omitempty" jsonschema:"DEFAULT FALSE. true BACK-APPLIES the rule to all matching historical transactions — the blast radius; leave false unless that is exactly the intent"`
+}
+
+func (f ruleFieldsIn) toRuleInput() (monarch.RuleInput, error) {
+	r := monarch.RuleInput{
+		ApplyToExistingTransactions: f.ApplyToExisting,
+		AccountIDs:                  f.AccountIDs,
+		SetCategoryID:               f.SetCategoryID,
+		SetMerchantName:             f.SetMerchantName,
+		AddTagIDs:                   f.AddTagIDs,
+		SetHideFromReports:          f.HideFromReports,
+		ReviewStatusAction:          f.ReviewStatus,
+	}
+	for _, v := range f.MerchantContains {
+		r.MerchantNameCriteria = append(r.MerchantNameCriteria, monarch.RuleCriterion{Operator: "contains", Value: v})
+	}
+	for _, v := range f.MerchantEquals {
+		r.MerchantNameCriteria = append(r.MerchantNameCriteria, monarch.RuleCriterion{Operator: "eq", Value: v})
+	}
+	if f.AmountOperator != "" || f.AmountValue != nil {
+		if f.AmountOperator == "" || f.AmountValue == nil {
+			return r, errors.New("amount_operator and amount_value must be provided together")
+		}
+		isExpense := true
+		if f.AmountIsExpense != nil {
+			isExpense = *f.AmountIsExpense
+		}
+		r.AmountCriteria = &monarch.RuleAmountCriterion{
+			Operator: f.AmountOperator, IsExpense: isExpense, Value: *f.AmountValue,
+		}
+	}
+	return r, nil
+}
+
+type createRuleOut struct {
+	Created bool   `json:"created"`
+	RuleID  string `json:"rule_id,omitempty"`
+	Note    string `json:"note,omitempty"`
+}
+
+func ruleIDs(rules []*monarch.Rule) map[string]bool {
+	ids := make(map[string]bool, len(rules))
+	for _, r := range rules {
+		ids[r.ID] = true
+	}
+	return ids
+}
+
+func (h *toolHandlers) createRule(ctx context.Context, req *mcp.CallToolRequest, in ruleFieldsIn) (*mcp.CallToolResult, createRuleOut, error) {
+	var zero createRuleOut
+	if err := h.requireWriteMode(); err != nil {
+		return nil, zero, err
+	}
+	r, err := in.toRuleInput()
+	if err != nil {
+		return nil, zero, err
+	}
+	// The create mutation returns no id — diff the rule list around it.
+	before, err := h.api.ListRules(ctx)
+	if err != nil {
+		return nil, zero, err
+	}
+	if err := h.api.CreateRule(ctx, r); err != nil {
+		return nil, zero, err
+	}
+	h.logger.Info("write applied", "tool", "create_rule", "apply_to_existing", in.ApplyToExisting)
+	out := createRuleOut{Created: true}
+	after, err := h.api.ListRules(ctx)
+	if err != nil {
+		out.Note = "rule created, but re-listing rules to find its id failed; call get_rules"
+		return nil, out, nil
+	}
+	seen := ruleIDs(before)
+	for _, rule := range after {
+		if !seen[rule.ID] {
+			if out.RuleID != "" {
+				out.RuleID = ""
+				out.Note = "multiple new rules appeared; call get_rules to identify yours"
+				break
+			}
+			out.RuleID = rule.ID
+		}
+	}
+	return nil, out, nil
+}
+
+type updateRuleIn struct {
+	RuleID string `json:"rule_id" jsonschema:"id from get_rules"`
+	ruleFieldsIn
+}
+
+func (h *toolHandlers) updateRule(ctx context.Context, req *mcp.CallToolRequest, in updateRuleIn) (*mcp.CallToolResult, deletedOut, error) {
+	var zero deletedOut
+	if err := h.requireWriteMode(); err != nil {
+		return nil, zero, err
+	}
+	if in.RuleID == "" {
+		return nil, zero, errors.New("rule_id is required")
+	}
+	r, err := in.toRuleInput()
+	if err != nil {
+		return nil, zero, err
+	}
+	if err := h.api.UpdateRule(ctx, in.RuleID, r); err != nil {
+		return nil, zero, err
+	}
+	h.logger.Info("write applied", "tool", "update_rule", "rule_id", in.RuleID)
+	return nil, deletedOut{Deleted: false}, nil
+}
+
+type deleteRuleIn struct {
+	RuleID  string `json:"rule_id" jsonschema:"id from get_rules"`
+	Confirm bool   `json:"confirm" jsonschema:"must be true — this permanently deletes the rule"`
+}
+
+func (h *toolHandlers) deleteRule(ctx context.Context, req *mcp.CallToolRequest, in deleteRuleIn) (*mcp.CallToolResult, deletedOut, error) {
+	var zero deletedOut
+	if err := h.requireWriteMode(); err != nil {
+		return nil, zero, err
+	}
+	if !in.Confirm {
+		return nil, zero, errors.New("refusing to delete without confirm:true — deletion is permanent")
+	}
+	if in.RuleID == "" {
+		return nil, zero, errors.New("rule_id is required")
+	}
+	if err := h.api.DeleteRule(ctx, in.RuleID); err != nil {
+		return nil, zero, err
+	}
+	h.logger.Info("write applied", "tool", "delete_rule", "rule_id", in.RuleID)
+	return nil, deletedOut{Deleted: true}, nil
+}
+
 // ---- server construction ----
 
 func ptr[T any](v T) *T { return &v }
@@ -1285,6 +1771,56 @@ func buildMCPServer(api monarchAPI, writes bool, logger *slog.Logger, limits *to
 			Description: "Recategorize up to 25 transactions to one category (chunk larger sets across calls). DRY-RUN BY DEFAULT: the first call previews the change; call again with dry_run=false to execute. Per-transaction results are reported.",
 			Annotations: &mcp.ToolAnnotations{DestructiveHint: ptr(true), IdempotentHint: true, OpenWorldHint: ptr(false)},
 		}, wrap(limits, h.bulkCategorize))
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "set_transaction_splits",
+			Description: "REPLACE the full split set of a transaction (empty splits list clears all splits). Split amounts must sum exactly to the parent's amount — validated before writing.",
+			Annotations: &mcp.ToolAnnotations{DestructiveHint: ptr(true), IdempotentHint: true, OpenWorldHint: ptr(false)},
+		}, wrap(limits, h.setSplits))
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "create_transaction",
+			Description: "Create a transaction (intended for manual accounts). category_id is required by the API; returns the new transaction_id.",
+			Annotations: &mcp.ToolAnnotations{DestructiveHint: ptr(false), IdempotentHint: false, OpenWorldHint: ptr(false)},
+		}, wrap(limits, h.createTransaction))
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "set_budget_amount",
+			Description: "Set the planned monthly budget for exactly one category OR one category group. Amount 0 clears the budget.",
+			Annotations: &mcp.ToolAnnotations{DestructiveHint: ptr(true), IdempotentHint: true, OpenWorldHint: ptr(false)},
+		}, wrap(limits, h.setBudget))
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "update_merchant",
+			Description: "Rename a merchant and/or configure its recurring stream (frequency, expected amount, base date, active) — the only way to modify recurring-stream config.",
+			Annotations: &mcp.ToolAnnotations{DestructiveHint: ptr(true), IdempotentHint: true, OpenWorldHint: ptr(false)},
+		}, wrap(limits, h.updateMerchant))
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "create_category",
+			Description: "Create a transaction category inside a category group; returns its id.",
+			Annotations: &mcp.ToolAnnotations{DestructiveHint: ptr(false), IdempotentHint: false, OpenWorldHint: ptr(false)},
+		}, wrap(limits, h.createCategory))
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "update_category",
+			Description: "Rename or re-icon a category.",
+			Annotations: &mcp.ToolAnnotations{DestructiveHint: ptr(true), IdempotentHint: true, OpenWorldHint: ptr(false)},
+		}, wrap(limits, h.updateCategory))
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "delete_category",
+			Description: "PERMANENTLY delete a category. Requires confirm:true. Strongly prefer passing move_to_category_id so its transactions are reassigned rather than orphaned.",
+			Annotations: &mcp.ToolAnnotations{DestructiveHint: ptr(true), IdempotentHint: true, OpenWorldHint: ptr(false)},
+		}, wrap(limits, h.deleteCategory))
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "create_rule",
+			Description: "Create an auto-categorization rule (criteria: merchant contains/equals, amount, accounts; actions: set category/merchant, add tags, hide, review status). apply_to_existing defaults FALSE — true back-applies to all matching history. Returns the new rule_id.",
+			Annotations: &mcp.ToolAnnotations{DestructiveHint: ptr(true), IdempotentHint: false, OpenWorldHint: ptr(false)},
+		}, wrap(limits, h.createRule))
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "update_rule",
+			Description: "Replace a rule's full definition (same fields as create_rule).",
+			Annotations: &mcp.ToolAnnotations{DestructiveHint: ptr(true), IdempotentHint: true, OpenWorldHint: ptr(false)},
+		}, wrap(limits, h.updateRule))
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "delete_rule",
+			Description: "PERMANENTLY delete an auto-categorization rule. Requires confirm:true.",
+			Annotations: &mcp.ToolAnnotations{DestructiveHint: ptr(true), IdempotentHint: true, OpenWorldHint: ptr(false)},
+		}, wrap(limits, h.deleteRule))
 	}
 	return server
 }

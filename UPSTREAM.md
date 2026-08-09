@@ -8,8 +8,8 @@ behavior. Never vendor, copy, or transcribe upstream code — for licensing
 provenance, and because understanding the fix is the point.
 
 This repo deliberately has no third-party Monarch dependency (see the
-2026-08 decision record in CLAUDE.md and `.supply-chain-risk-auditor/results.md`).
-The projects below are eyes, not dependencies.
+2026-08 decision record in CLAUDE.md). The projects below are eyes, not
+dependencies.
 
 ## Watchlist
 

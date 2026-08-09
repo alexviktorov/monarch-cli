@@ -8,8 +8,8 @@ or an LLM connected over MCP.
 The API client is written from scratch in `pkg/monarch` with **zero
 third-party dependencies** (stdlib + `golang.org/x/term` for prompts): no
 telemetry, no community client libraries, the only host contacted is
-`api.monarch.com`. See `.supply-chain-risk-auditor/results.md` for the audit
-that motivated this and UPSTREAM.md for how upstream fixes are tracked
+`api.monarch.com`. A supply-chain audit of the previous third-party client
+motivated the rewrite; UPSTREAM.md documents how upstream fixes are tracked
 without importing code.
 
 > ⚠️ This is an **unofficial** API. Monarch can change or break it at any
@@ -115,13 +115,18 @@ Claude Desktop (`~/Library/Application Support/Claude/claude_desktop_config.json
 
 ### Writes (off by default)
 
-Three write tools exist — `update_transaction` (category, notes, amount,
-date, merchant, hide, mark-reviewed, tags), `create_tag`, and
-`bulk_categorize` (up to 25 transactions per call, **dry-run by default** —
-a preview is returned unless `dry_run=false` is passed explicitly). They are
-**not even registered** unless the server is started with *both* the
-`--allow-writes` flag and `MONARCH_MCP_ALLOW_WRITES=1`; a mismatch refuses to
-start. Register it as a separate server entry and only while you're actively
+Thirteen write tools exist: `update_transaction` (category, notes, amount,
+date, merchant, hide, mark-reviewed, tags), `create_tag`, `bulk_categorize`
+(up to 25 per call, **dry-run by default**), `set_transaction_splits`
+(sum-validated; empty list clears), `create_transaction` (manual accounts),
+`set_budget_amount` (0 clears), `update_merchant` (rename + recurring-stream
+config), `create_category` / `update_category` / `delete_category`
+(**confirm:true required**; supports transaction reassignment), and
+`create_rule` / `update_rule` / `delete_rule` (**confirm:true on delete**;
+back-applying to history requires explicit `apply_to_existing=true`). None
+are registered unless the server is started with *both* the
+`--allow-writes` flag and `MONARCH_MCP_ALLOW_WRITES=1`; a mismatch refuses
+to start. Register it as a separate server entry and only while you're actively
 doing a cleanup session:
 
 ```sh

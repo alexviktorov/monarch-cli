@@ -16,8 +16,8 @@ make check                # gofmt + vet + build + test + govulncheck (MANDATORY 
 ## Decision record (2026-08): clean-room client, no third-party Monarch deps
 
 This repo previously depended on `github.com/eshaffer321/monarch-go/v2`. A
-supply-chain audit (`.supply-chain-risk-auditor/results.md`) found no malicious
-code but an unacceptable posture for financial data: 3 stars, zero known
+supply-chain audit (2026-08) found no malicious code but an unacceptable
+posture for financial data: 3 stars, zero known
 importers, bus factor 1, no security contact, a vulnerable transitive pin, and
 a Sentry global-hub capture path (full GraphQL query + variables on every
 error, no opt-out) that any `sentry.Init` in the process would silently arm.
@@ -90,8 +90,23 @@ transport only — its 2026 HIGH advisories were all HTTP-transport bugs).
   JSON — shape unpinned), `Common_SavingsGoals`, `GetInstitutions`,
   `GetIdentity`; mutations `Web_TransactionDrawerUpdateTransaction`
   (extended field set), `Web_SetTransactionTags`,
-  `Common_CreateTransactionTag`. The `needsReview` filter key is
-  robcerda-derived — verify on first live use.
+  `Common_CreateTransactionTag`, `Common_SplitTransactionMutation`,
+  `Common_CreateTransactionMutation`, `Common_UpdateBudgetItem`,
+  `Common_UpdateMerchant`, `Web_CreateCategory`/`Web_UpdateCategory`/
+  `Web_DeleteCategory`, `Common_Create/UpdateTransactionRuleMutationV2`,
+  `Common_DeleteTransactionRule`. The `needsReview` filter key is
+  live-verified (2026-08-09).
+- Mutation quirks pinned by tests: budget-set key is `applyToFuture` (never
+  applyToFutureMonths) and its payload has NO errors field (missing
+  budgetItem = failure); category create's group key is `group`; category/
+  rule deletes use BARE variables not input objects; rule actions are bare
+  values on the wire (category ID string, merchant NAME string, tag ID
+  list) while rule READS return objects — never round-trip; rule create/
+  update return errors only (no id — the MCP tool diffs get_rules around
+  the create); rule delete's `deleted` can be null ON SUCCESS (only
+  explicit false or an errors payload is failure); splits are full-replace
+  with server-enforced sum==parent (MCP pre-validates); create-transaction
+  requires categoryId and rounds amount to 2dp.
 - Sign convention: expenses negative, income positive. `monthlyEstimate` and
   the cashflow/recurring renderers rely on it.
 
@@ -139,14 +154,19 @@ Read-only:
   (`GetAccountRecentBalances`), credit score (`GetCreditScoreSnapshots`)
 - Scheduled routine wrapping scripts/upstream-check.sh (summarize-only)
 
-Writes (each needs explicit owner approval; dry-run pattern first):
-- Budget set: `Common_UpdateBudgetItem` (NOT monarch-go's `setBudget` —
-  flagged possibly deprecated)
-- Splits: `Common_SplitTransactionMutation` (payload errors carry
-  `fieldErrors{field messages}` — richer than our payloadError)
-- Create/delete transaction; categories CRUD (`Web_DeleteCategory` has a
-  `moveToCategoryId` reassignment arg); rules CRUD (highest blast radius —
-  only after dry-run pattern is proven); account refresh
-  (`Common_ForceRefreshAccountsMutation` + poll — hits third-party
-  institutions, deserves its own gate); manual accounts CRUD; holdings
-  CRUD; balance-history CSV upload (see UPSTREAM.md endpoint discrepancy)
+Writes (each needs explicit owner approval; dry-run/confirm pattern first):
+- Delete transaction: `Common_DeleteTransactionMutation` (input
+  `{transactionId}`; deleted+errors response)
+- Account refresh: `Common_ForceRefreshAccountsMutation` (input
+  `{accountIds}`) + poll `ForceRefreshAccountsQuery` (hasSyncInProgress) —
+  hits third-party institutions, deserves its own gate; watch for
+  credential.updateRequired to avoid polling forever
+- Manual accounts CRUD: `Web_CreateManualAccount` (type/subtype/
+  includeInNetWorth/name/displayBalance), `Common_UpdateAccount` (⚠️
+  hideFromList vs hideFromSummaryList input key unresolved — probe live),
+  `Common_DeleteAccount($id: UUID!)`
+- Holdings CRUD: `Common_CreateManualHolding`/`Common_UpdateHoldingMutation`
+  /`Common_DeleteHolding` + `SecuritySearch` two-step with exact-ticker
+  match guard
+- Balance-history CSV upload: REST multipart, hammem vs monarch-go form
+  fields disagree — devtools verification required (see UPSTREAM.md)

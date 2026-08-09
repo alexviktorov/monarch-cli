@@ -18,12 +18,23 @@ import (
 
 // fakeAPI implements monarchAPI for protocol tests.
 type fakeAPI struct {
-	err       error // returned by every read when set
-	tagErr    error // returned by SetTransactionTags only
-	updates   []monarch.TransactionUpdate
-	updateIDs []string
-	tagSets   [][]string
-	tagSetIDs []string
+	err             error // returned by every method when set
+	tagErr          error // returned by SetTransactionTags only
+	updates         []monarch.TransactionUpdate
+	updateIDs       []string
+	tagSets         [][]string
+	tagSetIDs       []string
+	splitsSet       [][]monarch.SplitInput
+	txCreates       []monarch.CreateTransactionParams
+	budgetSets      []monarch.BudgetItemParams
+	merchantUpdates []monarch.MerchantUpdate
+	catCreates      []monarch.CategoryCreate
+	catUpdates      []monarch.CategoryUpdate
+	catDeletes      [][2]string
+	ruleCreates     []monarch.RuleInput
+	ruleUpdates     []monarch.RuleInput
+	ruleDeletes     []string
+	rulesSeq        [][]*monarch.Rule // successive ListRules responses
 }
 
 func (f *fakeAPI) ListAccounts(ctx context.Context) ([]*monarch.Account, error) {
@@ -127,7 +138,15 @@ func (f *fakeAPI) ListHoldings(ctx context.Context, accountID string) ([]*monarc
 }
 
 func (f *fakeAPI) ListRules(ctx context.Context) ([]*monarch.Rule, error) {
-	return nil, f.err
+	if f.err != nil {
+		return nil, f.err
+	}
+	if len(f.rulesSeq) > 0 {
+		next := f.rulesSeq[0]
+		f.rulesSeq = f.rulesSeq[1:]
+		return next, nil
+	}
+	return nil, nil
 }
 
 func (f *fakeAPI) ListGoals(ctx context.Context) ([]*monarch.Goal, error) {
@@ -143,6 +162,86 @@ func (f *fakeAPI) CreateTag(ctx context.Context, name, color string) (*monarch.T
 		return nil, f.err
 	}
 	return &monarch.Tag{ID: "new-tag", Name: name}, nil
+}
+
+func (f *fakeAPI) SetTransactionSplits(ctx context.Context, id string, splits []monarch.SplitInput) (*monarch.SplitResult, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	f.splitsSet = append(f.splitsSet, splits)
+	return &monarch.SplitResult{TransactionID: id, HasSplitTransactions: len(splits) > 0}, nil
+}
+
+func (f *fakeAPI) CreateTransaction(ctx context.Context, p monarch.CreateTransactionParams) (string, error) {
+	if f.err != nil {
+		return "", f.err
+	}
+	f.txCreates = append(f.txCreates, p)
+	return "created-tx", nil
+}
+
+func (f *fakeAPI) SetBudgetAmount(ctx context.Context, p monarch.BudgetItemParams) (*monarch.BudgetItem, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	f.budgetSets = append(f.budgetSets, p)
+	return &monarch.BudgetItem{ID: "b1", BudgetAmount: p.Amount}, nil
+}
+
+func (f *fakeAPI) UpdateMerchant(ctx context.Context, id string, p monarch.MerchantUpdate) (*monarch.MerchantInfo, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	f.merchantUpdates = append(f.merchantUpdates, p)
+	return &monarch.MerchantInfo{ID: id, Name: "Renamed"}, nil
+}
+
+func (f *fakeAPI) CreateCategory(ctx context.Context, p monarch.CategoryCreate) (*monarch.Category, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	f.catCreates = append(f.catCreates, p)
+	return &monarch.Category{ID: "new-cat", Name: p.Name}, nil
+}
+
+func (f *fakeAPI) UpdateCategory(ctx context.Context, id string, p monarch.CategoryUpdate) (*monarch.Category, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	f.catUpdates = append(f.catUpdates, p)
+	return &monarch.Category{ID: id, Name: "Renamed"}, nil
+}
+
+func (f *fakeAPI) DeleteCategory(ctx context.Context, id, moveTo string) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.catDeletes = append(f.catDeletes, [2]string{id, moveTo})
+	return nil
+}
+
+func (f *fakeAPI) CreateRule(ctx context.Context, r monarch.RuleInput) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.ruleCreates = append(f.ruleCreates, r)
+	return nil
+}
+
+func (f *fakeAPI) UpdateRule(ctx context.Context, id string, r monarch.RuleInput) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.ruleUpdates = append(f.ruleUpdates, r)
+	return nil
+}
+
+func (f *fakeAPI) DeleteRule(ctx context.Context, id string) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.ruleDeletes = append(f.ruleDeletes, id)
+	return nil
 }
 
 func startMCP(t *testing.T, api monarchAPI, writes bool, limits *toolLimits) *mcp.ClientSession {
@@ -198,7 +297,12 @@ var readToolNames = []string{
 	"get_tags", "get_transaction", "get_transaction_summary", "get_transactions",
 }
 
-var writeToolNames = []string{"bulk_categorize", "create_tag", "update_transaction"}
+var writeToolNames = []string{
+	"bulk_categorize", "create_category", "create_rule", "create_tag",
+	"create_transaction", "delete_category", "delete_rule",
+	"set_budget_amount", "set_transaction_splits", "update_category",
+	"update_merchant", "update_rule", "update_transaction",
+}
 
 func TestMCPToolInventoryReadOnly(t *testing.T) {
 	cs := startMCP(t, &fakeAPI{}, false, nil)
@@ -326,6 +430,119 @@ func TestMCPCreateTag(t *testing.T) {
 	}
 	if out.ID != "new-tag" || out.Name != "vacations" {
 		t.Errorf("out = %+v", out)
+	}
+}
+
+func TestMCPDeletesRequireConfirm(t *testing.T) {
+	api := &fakeAPI{}
+	cs := startMCP(t, api, true, nil)
+	for tool, args := range map[string]map[string]any{
+		"delete_category": {"category_id": "c1"},
+		"delete_rule":     {"rule_id": "r1"},
+	} {
+		res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: tool, Arguments: args})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !res.IsError || !strings.Contains(resultText(t, res), "confirm") {
+			t.Errorf("%s without confirm must refuse: %s", tool, resultText(t, res))
+		}
+	}
+	if len(api.catDeletes) != 0 || len(api.ruleDeletes) != 0 {
+		t.Error("no delete may reach the API without confirm")
+	}
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "delete_category", Arguments: map[string]any{"category_id": "c1", "move_to_category_id": "c2", "confirm": true},
+	})
+	if err != nil || res.IsError {
+		t.Fatalf("confirmed delete failed: %v %s", err, resultText(t, res))
+	}
+	if len(api.catDeletes) != 1 || api.catDeletes[0] != [2]string{"c1", "c2"} {
+		t.Errorf("catDeletes = %v", api.catDeletes)
+	}
+}
+
+func TestMCPSplitsSumGuard(t *testing.T) {
+	api := &fakeAPI{} // fake GetTransaction returns Amount -5
+	cs := startMCP(t, api, true, nil)
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "set_transaction_splits",
+		Arguments: map[string]any{
+			"transaction_id": "t1",
+			"splits":         []map[string]any{{"amount": -3}, {"amount": -1}}, // sums to -4, parent is -5
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError || !strings.Contains(resultText(t, res), "-5.00") {
+		t.Errorf("mismatched sum must be rejected with the expected total: %s", resultText(t, res))
+	}
+	if len(api.splitsSet) != 0 {
+		t.Error("no write may happen on sum mismatch")
+	}
+	res, err = cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "set_transaction_splits",
+		Arguments: map[string]any{
+			"transaction_id": "t1",
+			"splits":         []map[string]any{{"amount": -3, "category_id": "c1"}, {"amount": -2}},
+		},
+	})
+	if err != nil || res.IsError {
+		t.Fatalf("matching sum failed: %v %s", err, resultText(t, res))
+	}
+	if len(api.splitsSet) != 1 || len(api.splitsSet[0]) != 2 {
+		t.Errorf("splitsSet = %v", api.splitsSet)
+	}
+}
+
+func TestMCPCreateRuleReturnsDiffedID(t *testing.T) {
+	api := &fakeAPI{rulesSeq: [][]*monarch.Rule{
+		{{ID: "r1"}},             // before
+		{{ID: "r1"}, {ID: "r2"}}, // after
+	}}
+	cs := startMCP(t, api, true, nil)
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "create_rule",
+		Arguments: map[string]any{
+			"merchant_contains": []string{"NETFLIX"},
+			"set_category_id":   "c9",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IsError {
+		t.Fatalf("IsError: %s", resultText(t, res))
+	}
+	raw, _ := json.Marshal(res.StructuredContent)
+	var out createRuleOut
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !out.Created || out.RuleID != "r2" {
+		t.Errorf("out = %+v, want diffed rule id r2", out)
+	}
+	if len(api.ruleCreates) != 1 || api.ruleCreates[0].ApplyToExistingTransactions {
+		t.Errorf("ruleCreates = %+v — apply_to_existing must default false", api.ruleCreates)
+	}
+}
+
+func TestMCPSetBudgetAmount(t *testing.T) {
+	api := &fakeAPI{}
+	cs := startMCP(t, api, true, nil)
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "set_budget_amount",
+		Arguments: map[string]any{"category_id": "c1", "amount": 600, "month": "2026-09"},
+	})
+	if err != nil || res.IsError {
+		t.Fatalf("%v %s", err, resultText(t, res))
+	}
+	if len(api.budgetSets) != 1 || api.budgetSets[0].CategoryID != "c1" || api.budgetSets[0].Amount != 600 {
+		t.Errorf("budgetSets = %+v", api.budgetSets)
+	}
+	if got := api.budgetSets[0].StartDate.Format("2006-01-02"); got != "2026-09-01" {
+		t.Errorf("StartDate = %s", got)
 	}
 }
 

@@ -40,6 +40,7 @@ type Client struct {
 	Rules        *RulesService
 	Goals        *GoalsService
 	Institutions *InstitutionsService
+	Merchants    *MerchantsService
 }
 
 type Option func(*Client)
@@ -151,6 +152,7 @@ func New(opts ...Option) (*Client, error) {
 	c.Rules = &RulesService{c: c}
 	c.Goals = &GoalsService{c: c}
 	c.Institutions = &InstitutionsService{c: c}
+	c.Merchants = &MerchantsService{c: c}
 	return c, nil
 }
 
