@@ -3,7 +3,9 @@ package monarch
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -288,6 +290,213 @@ func TestTagsList(t *testing.T) {
 	}
 	if len(tags) != 2 || tags[1].Name != "work" {
 		t.Errorf("tags = %+v", tags)
+	}
+}
+
+func TestTransactionsServerSideFilters(t *testing.T) {
+	var vars map[string]any
+	c := gqlServer(t, "GetTransactionsList", txListFixture, &vars)
+	_, err := c.Transactions.Query().
+		WithTags("g1", "g2").
+		WithHasNotes(true).WithHasAttachments(false).
+		WithIsSplit(true).WithIsRecurring(false).
+		WithHiddenFromReports(true).WithNeedsReview(true).
+		Execute(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	filters, _ := vars["filters"].(map[string]any)
+	tags, _ := filters["tags"].([]any)
+	if len(tags) != 2 {
+		t.Errorf("tags filter = %v", filters["tags"])
+	}
+	for key, want := range map[string]bool{
+		"hasNotes": true, "hasAttachments": false, "isSplit": true,
+		"isRecurring": false, "hideFromReports": true, "needsReview": true,
+	} {
+		if got, ok := filters[key].(bool); !ok || got != want {
+			t.Errorf("filter %s = %v, want %v", key, filters[key], want)
+		}
+	}
+}
+
+func TestTransactionsAll(t *testing.T) {
+	var calls atomic.Int32
+	c := authedClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req gqlRequest
+		json.NewDecoder(r.Body).Decode(&req)
+		offset := int(req.Variables["offset"].(float64))
+		// 3 pages of 2 out of 5 total.
+		txs := ""
+		for i := offset; i < min(offset+2, 5); i++ {
+			if txs != "" {
+				txs += ","
+			}
+			txs += fmt.Sprintf(`{"id":"t%d","date":"2026-08-01","amount":-1}`, i)
+		}
+		calls.Add(1)
+		fmt.Fprintf(w, `{"data":{"allTransactions":{"totalCount":5,"results":[%s]}}}`, txs)
+	}))
+	txs, err := c.Transactions.Query().Limit(2).All(context.Background(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(txs) != 5 || txs[4].ID != "t4" {
+		t.Fatalf("got %d transactions", len(txs))
+	}
+	if calls.Load() != 3 {
+		t.Errorf("calls = %d, want 3 pages", calls.Load())
+	}
+	// The cap truncates.
+	calls.Store(0)
+	txs, err = c.Transactions.Query().Limit(2).All(context.Background(), 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(txs) != 3 {
+		t.Errorf("capped fetch = %d, want 3", len(txs))
+	}
+}
+
+func TestTransactionsGetDetail(t *testing.T) {
+	var vars map[string]any
+	c := gqlServer(t, "GetTransactionDetails", `{"getTransaction":{
+		"id":"t1","amount":-100,"pending":false,"date":"2026-08-01",
+		"hideFromReports":false,"plaidName":"COSTCO WHSE","notes":"bulk",
+		"isRecurring":false,"needsReview":true,"hasSplitTransactions":true,"isSplitTransaction":false,
+		"category":{"id":"c1","name":"Groceries"},"merchant":{"id":"m1","name":"Costco"},
+		"account":{"id":"a1","displayName":"Visa"},"tags":[],
+		"splitTransactions":[
+			{"id":"s1","amount":-60,"notes":"","merchant":{"id":"m1","name":"Costco"},"category":{"id":"c1","name":"Groceries"}},
+			{"id":"s2","amount":-40,"notes":"tires","merchant":{"id":"m1","name":"Costco"},"category":{"id":"c9","name":"Auto"}}
+		]}}`, &vars)
+	d, err := c.Transactions.Get(context.Background(), "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vars["id"] != "t1" {
+		t.Errorf("vars = %v", vars)
+	}
+	if d.ID != "t1" || !d.NeedsReview || !d.HasSplitTransactions || d.PlaidName != "COSTCO WHSE" {
+		t.Errorf("detail = %+v", d)
+	}
+	if len(d.Splits) != 2 || d.Splits[1].Category.Name != "Auto" {
+		t.Errorf("splits = %+v", d.Splits)
+	}
+}
+
+func TestHoldingsList(t *testing.T) {
+	var vars map[string]any
+	c := gqlServer(t, "Web_GetHoldings", `{"portfolio":{"aggregateHoldings":{"edges":[
+		{"node":{"id":"h1","quantity":10,"basis":1000,"totalValue":1500,
+		 "security":{"id":"s1","name":"Vanguard Total","type":"etf","ticker":"VTI","currentPrice":150}}}
+	]}}}`, &vars)
+	holdings, err := c.Holdings.List(context.Background(), "a1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, _ := vars["input"].(map[string]any)
+	ids, _ := input["accountIds"].([]any)
+	if len(ids) != 1 || ids[0] != "a1" {
+		t.Errorf("input = %v", input)
+	}
+	if len(holdings) != 1 || holdings[0].Security.Ticker != "VTI" || holdings[0].TotalValue != 1500 {
+		t.Errorf("holdings = %+v", holdings[0])
+	}
+}
+
+func TestDailySnapshots(t *testing.T) {
+	var vars map[string]any
+	c := gqlServer(t, "GetAggregateSnapshots", `{"aggregateSnapshots":[
+		{"date":"2026-08-01","balance":100000.5},{"date":"2026-08-02","balance":100200}
+	]}`, &vars)
+	snaps, err := c.Accounts.GetDailySnapshots(context.Background(), date("2026-08-01"), time.Time{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	filters, _ := vars["filters"].(map[string]any)
+	if filters["startDate"] != "2026-08-01" {
+		t.Errorf("filters = %v", filters)
+	}
+	if _, hasEnd := filters["endDate"]; hasEnd {
+		t.Error("zero end must omit endDate")
+	}
+	if len(snaps) != 2 || snaps[1].Balance != 100200 {
+		t.Errorf("snaps = %+v", snaps)
+	}
+}
+
+func TestCashflowGetSummary(t *testing.T) {
+	var vars map[string]any
+	c := gqlServer(t, "Web_GetCashFlowSummary", `{"summary":[{"summary":
+		{"sumIncome":8000,"sumExpense":-5000,"savings":3000,"savingsRate":0.375}}]}`, &vars)
+	sum, err := c.Cashflow.GetSummary(context.Background(), CashflowParams{
+		StartDate: date("2026-08-01"), EndDate: date("2026-08-31"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	filters, _ := vars["filters"].(map[string]any)
+	for _, key := range []string{"search", "categories", "accounts", "tags"} {
+		if _, ok := filters[key]; !ok {
+			t.Errorf("filters missing required empty key %q", key)
+		}
+	}
+	if sum.Expense != 5000 || sum.SavingsRate != 0.375 {
+		t.Errorf("summary = %+v", sum)
+	}
+}
+
+func TestRulesList(t *testing.T) {
+	c := gqlServer(t, "GetTransactionRules", `{"transactionRules":[
+		{"id":"r1","order":0,
+		 "merchantCriteria":[{"operator":"contains","value":"NETFLIX"}],
+		 "amountCriteria":null,"categoryIds":[],"accountIds":[],
+		 "setCategoryAction":{"id":"c9","name":"Streaming"},
+		 "setMerchantAction":null,"addTagsAction":[],
+		 "setHideFromReportsAction":null,"reviewStatusAction":"",
+		 "recentApplicationCount":12,"lastAppliedAt":"2026-08-01T10:00:00Z"}
+	]}`, nil)
+	rules, err := c.Rules.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := rules[0]
+	if r.ID != "r1" || r.SetCategoryAction.Name != "Streaming" || r.RecentApplicationCount != 12 {
+		t.Errorf("rule = %+v", r)
+	}
+	if len(r.MerchantCriteria) == 0 {
+		t.Error("merchant criteria raw JSON should be retained")
+	}
+}
+
+func TestGoalsList(t *testing.T) {
+	c := gqlServer(t, "Common_SavingsGoals", `{"savingsGoals":[
+		{"id":"g1","type":"savings","name":"House fund","status":"active","progress":0.42,
+		 "currentBalance":42000,"targetDate":"2028-01-01","targetAmount":100000,
+		 "plannedMonthlyContribution":1500,"netContribution":42000,
+		 "forecastedCompletionDate":"2029-06-01"}
+	]}`, nil)
+	goals, err := c.Goals.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if goals[0].Name != "House fund" || goals[0].Progress != 0.42 || goals[0].TargetAmount != 100000 {
+		t.Errorf("goal = %+v", goals[0])
+	}
+}
+
+func TestInstitutionsList(t *testing.T) {
+	c := gqlServer(t, "GetInstitutions", `{"credentials":[
+		{"id":"cr1","updateRequired":true,"dataProvider":"PLAID",
+		 "institution":{"id":"i1","name":"Chase","url":"https://chase.com"}}
+	]}`, nil)
+	creds, err := c.Institutions.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !creds[0].UpdateRequired || creds[0].Institution.Name != "Chase" {
+		t.Errorf("credential = %+v", creds[0])
 	}
 }
 

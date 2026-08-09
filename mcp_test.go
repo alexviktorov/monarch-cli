@@ -62,7 +62,10 @@ func (f *fakeAPI) GetCashflow(ctx context.Context, start, end time.Time) (*monar
 }
 
 func (f *fakeAPI) ListCategories(ctx context.Context) ([]*monarch.Category, error) {
-	return nil, f.err
+	if f.err != nil {
+		return nil, f.err
+	}
+	return []*monarch.Category{{ID: "c2", Name: "Dining"}}, nil
 }
 
 func (f *fakeAPI) ListTags(ctx context.Context) ([]*monarch.Tag, error) {
@@ -90,6 +93,51 @@ func (f *fakeAPI) SetTransactionTags(ctx context.Context, id string, tagIDs []st
 	f.tagSetIDs = append(f.tagSetIDs, id)
 	f.tagSets = append(f.tagSets, tagIDs)
 	return f.err
+}
+
+func (f *fakeAPI) Ping(ctx context.Context) (*monarch.Identity, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return &monarch.Identity{ID: "u1", Email: "a@b.c"}, nil
+}
+
+func (f *fakeAPI) GetTransaction(ctx context.Context, id string) (*monarch.TransactionDetail, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return &monarch.TransactionDetail{Transaction: monarch.Transaction{ID: id, Amount: -5}}, nil
+}
+
+func (f *fakeAPI) GetCashflowSummary(ctx context.Context, start, end time.Time) (*monarch.CashflowSummary, error) {
+	return &monarch.CashflowSummary{Income: 100}, f.err
+}
+
+func (f *fakeAPI) GetDailySnapshots(ctx context.Context, start time.Time) ([]*monarch.DailySnapshot, error) {
+	return nil, f.err
+}
+
+func (f *fakeAPI) ListHoldings(ctx context.Context, accountID string) ([]*monarch.Holding, error) {
+	return nil, f.err
+}
+
+func (f *fakeAPI) ListRules(ctx context.Context) ([]*monarch.Rule, error) {
+	return nil, f.err
+}
+
+func (f *fakeAPI) ListGoals(ctx context.Context) ([]*monarch.Goal, error) {
+	return nil, f.err
+}
+
+func (f *fakeAPI) ListInstitutions(ctx context.Context) ([]*monarch.Credential, error) {
+	return nil, f.err
+}
+
+func (f *fakeAPI) CreateTag(ctx context.Context, name, color string) (*monarch.Tag, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return &monarch.Tag{ID: "new-tag", Name: name}, nil
 }
 
 func startMCP(t *testing.T, api monarchAPI, writes bool, limits *toolLimits) *mcp.ClientSession {
@@ -139,10 +187,13 @@ func resultText(t *testing.T, res *mcp.CallToolResult) string {
 }
 
 var readToolNames = []string{
-	"get_accounts", "get_budget", "get_cashflow", "get_categories",
-	"get_networth_history", "get_recurring", "get_tags",
-	"get_transaction_summary", "get_transactions",
+	"check_session", "get_accounts", "get_budget", "get_cashflow",
+	"get_cashflow_summary", "get_categories", "get_goals", "get_holdings",
+	"get_institutions", "get_networth_history", "get_recurring", "get_rules",
+	"get_tags", "get_transaction", "get_transaction_summary", "get_transactions",
 }
+
+var writeToolNames = []string{"bulk_categorize", "create_tag", "update_transaction"}
 
 func TestMCPToolInventoryReadOnly(t *testing.T) {
 	cs := startMCP(t, &fakeAPI{}, false, nil)
@@ -162,14 +213,147 @@ func TestMCPToolInventoryReadOnly(t *testing.T) {
 func TestMCPToolInventoryWithWrites(t *testing.T) {
 	cs := startMCP(t, &fakeAPI{}, true, nil)
 	got := toolNames(t, cs)
-	found := false
-	for _, name := range got {
-		if name == "update_transaction" {
-			found = true
+	want := append(append([]string{}, readToolNames...), writeToolNames...)
+	sort.Strings(want)
+	if len(got) != len(want) {
+		t.Fatalf("tools = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("tools = %v, want %v", got, want)
 		}
 	}
-	if !found || len(got) != len(readToolNames)+1 {
-		t.Fatalf("tools = %v, want the 9 read tools plus update_transaction", got)
+}
+
+func TestMCPBulkCategorizeDryRunByDefault(t *testing.T) {
+	api := &fakeAPI{}
+	cs := startMCP(t, api, true, nil)
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "bulk_categorize",
+		Arguments: map[string]any{
+			"transaction_ids": []string{"t1", "t2"},
+			"category_id":     "c2",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IsError {
+		t.Fatalf("IsError: %s", resultText(t, res))
+	}
+	if len(api.updates) != 0 {
+		t.Fatal("dry-run (the default) must not perform any writes")
+	}
+	raw, _ := json.Marshal(res.StructuredContent)
+	var out bulkCategorizeOut
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !out.DryRun || out.Count != 2 || out.Category.Name != "Dining" || len(out.Planned) != 2 {
+		t.Errorf("out = %+v", out)
+	}
+}
+
+func TestMCPBulkCategorizeExecutes(t *testing.T) {
+	api := &fakeAPI{}
+	cs := startMCP(t, api, true, nil)
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "bulk_categorize",
+		Arguments: map[string]any{
+			"transaction_ids": []string{"t1", "t2"},
+			"category_id":     "c2",
+			"dry_run":         false,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IsError {
+		t.Fatalf("IsError: %s", resultText(t, res))
+	}
+	if len(api.updates) != 2 || *api.updates[0].CategoryID != "c2" {
+		t.Errorf("updates = %+v", api.updates)
+	}
+	raw, _ := json.Marshal(res.StructuredContent)
+	var out bulkCategorizeOut
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.DryRun || out.Succeeded != 2 || out.Failed != 0 {
+		t.Errorf("out = %+v", out)
+	}
+}
+
+func TestMCPBulkCategorizeRejectsUnknownCategory(t *testing.T) {
+	api := &fakeAPI{}
+	cs := startMCP(t, api, true, nil)
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "bulk_categorize",
+		Arguments: map[string]any{
+			"transaction_ids": []string{"t1"},
+			"category_id":     "nope",
+			"dry_run":         false,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError || len(api.updates) != 0 {
+		t.Error("unknown category must fail before any write")
+	}
+}
+
+func TestMCPCreateTag(t *testing.T) {
+	cs := startMCP(t, &fakeAPI{}, true, nil)
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "create_tag", Arguments: map[string]any{"name": "vacations"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IsError {
+		t.Fatalf("IsError: %s", resultText(t, res))
+	}
+	raw, _ := json.Marshal(res.StructuredContent)
+	var out createTagOut
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.ID != "new-tag" || out.Name != "vacations" {
+		t.Errorf("out = %+v", out)
+	}
+}
+
+func TestMCPCheckSession(t *testing.T) {
+	cs := startMCP(t, &fakeAPI{}, false, nil)
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "check_session", Arguments: map[string]any{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(res.StructuredContent)
+	var out checkSessionOut
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !out.Valid || out.Email != "a@b.c" {
+		t.Errorf("out = %+v", out)
+	}
+
+	bad := startMCP(t, &fakeAPI{err: monarch.ErrSessionExpired}, false, nil)
+	res, err = bad.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "check_session", Arguments: map[string]any{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ = json.Marshal(res.StructuredContent)
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Valid || !strings.Contains(out.Detail, "monarch login") {
+		t.Errorf("out = %+v, want invalid with re-login guidance", out)
 	}
 }
 

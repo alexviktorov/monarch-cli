@@ -1,9 +1,13 @@
 package main
 
 import (
+	"bytes"
+	"encoding/csv"
+	"encoding/json"
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -278,4 +282,241 @@ func abs(v float64) float64 {
 		return -v
 	}
 	return v
+}
+
+// ---- CSV output ----
+
+func txMerchant(tx *monarch.Transaction) string {
+	if tx.Merchant != nil && tx.Merchant.Name != "" {
+		return tx.Merchant.Name
+	}
+	return tx.PlaidName
+}
+
+func csvTransactions(w io.Writer, txs []*monarch.Transaction) error {
+	cw := csv.NewWriter(w)
+	if err := cw.Write([]string{"id", "date", "merchant", "category", "account", "amount", "notes", "tags"}); err != nil {
+		return err
+	}
+	for _, tx := range txs {
+		cat, acct := "", ""
+		if tx.Category != nil {
+			cat = tx.Category.Name
+		}
+		if tx.Account != nil {
+			acct = tx.Account.DisplayName
+		}
+		var tags []string
+		for _, tag := range tx.Tags {
+			tags = append(tags, tag.Name)
+		}
+		if err := cw.Write([]string{
+			tx.ID, tx.Date.Format("2006-01-02"), txMerchant(tx), cat, acct,
+			strconv.FormatFloat(tx.Amount, 'f', 2, 64), tx.Notes, strings.Join(tags, ";"),
+		}); err != nil {
+			return err
+		}
+	}
+	cw.Flush()
+	return cw.Error()
+}
+
+func csvBudget(w io.Writer, rows []*monarch.BudgetRow) error {
+	cw := csv.NewWriter(w)
+	if err := cw.Write([]string{"category_id", "category", "group_type", "month", "budgeted", "spent", "remaining"}); err != nil {
+		return err
+	}
+	for _, b := range rows {
+		name := b.CategoryID
+		if b.Category != nil {
+			name = b.Category.Name
+		}
+		if err := cw.Write([]string{
+			b.CategoryID, name, b.GroupType, b.Month,
+			strconv.FormatFloat(b.Amount, 'f', 2, 64),
+			strconv.FormatFloat(b.Spent, 'f', 2, 64),
+			strconv.FormatFloat(b.Remaining, 'f', 2, 64),
+		}); err != nil {
+			return err
+		}
+	}
+	cw.Flush()
+	return cw.Error()
+}
+
+// ---- new read domains ----
+
+func renderTransactionDetail(w io.Writer, d *monarch.TransactionDetail) {
+	fmt.Fprintf(w, "Transaction %s\n", d.ID)
+	fmt.Fprintf(w, "  Date:      %s\n", d.Date.Format("2006-01-02"))
+	fmt.Fprintf(w, "  Amount:    %s\n", money(d.Amount))
+	fmt.Fprintf(w, "  Merchant:  %s\n", txMerchant(&d.Transaction))
+	if d.PlaidName != "" {
+		fmt.Fprintf(w, "  Statement: %s\n", d.PlaidName)
+	}
+	if d.Category != nil {
+		fmt.Fprintf(w, "  Category:  %s (%s)\n", d.Category.Name, d.Category.ID)
+	}
+	if d.Account != nil {
+		fmt.Fprintf(w, "  Account:   %s\n", d.Account.DisplayName)
+	}
+	if d.Notes != "" {
+		fmt.Fprintf(w, "  Notes:     %s\n", d.Notes)
+	}
+	if len(d.Tags) > 0 {
+		var names []string
+		for _, t := range d.Tags {
+			names = append(names, t.Name)
+		}
+		fmt.Fprintf(w, "  Tags:      %s\n", strings.Join(names, ", "))
+	}
+	var flags []string
+	for _, f := range []struct {
+		on   bool
+		name string
+	}{
+		{d.Pending, "pending"}, {d.HideFromReports, "hidden-from-reports"},
+		{d.IsRecurring, "recurring"}, {d.NeedsReview, "needs-review"},
+	} {
+		if f.on {
+			flags = append(flags, f.name)
+		}
+	}
+	if len(flags) > 0 {
+		fmt.Fprintf(w, "  Flags:     %s\n", strings.Join(flags, ", "))
+	}
+	if len(d.Splits) > 0 {
+		fmt.Fprintln(w, "  Splits:")
+		for _, sp := range d.Splits {
+			name := ""
+			if sp.Merchant != nil {
+				name = sp.Merchant.Name
+			}
+			cat := ""
+			if sp.Category != nil {
+				cat = sp.Category.Name
+			}
+			fmt.Fprintf(w, "    %s  %s  %s  %s\n", sp.ID, money(sp.Amount), truncate(name, 24), truncate(cat, 20))
+		}
+	}
+}
+
+func renderHoldings(w io.Writer, holdings []*monarch.Holding) {
+	sorted := make([]*monarch.Holding, len(holdings))
+	copy(sorted, holdings)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].TotalValue > sorted[j].TotalValue })
+	t := newTable(w, "TICKER", "NAME", "QUANTITY", "PRICE", "VALUE", "BASIS")
+	var total float64
+	for _, h := range sorted {
+		ticker, name, price := "", "", 0.0
+		if h.Security != nil {
+			ticker, name, price = h.Security.Ticker, h.Security.Name, h.Security.CurrentPrice
+		}
+		total += h.TotalValue
+		t.row(ticker, truncate(name, 30), strconv.FormatFloat(h.Quantity, 'f', -1, 64),
+			money(price), money(h.TotalValue), money(h.Basis))
+	}
+	t.flush()
+	fmt.Fprintf(w, "\nTotal holdings value: %s\n", money(total))
+}
+
+func renderRules(w io.Writer, rules []*monarch.Rule) {
+	sorted := make([]*monarch.Rule, len(rules))
+	copy(sorted, rules)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Order < sorted[j].Order })
+	t := newTable(w, "ID", "CRITERIA", "ACTION", "APPLIED(30D)", "LAST APPLIED")
+	for _, r := range sorted {
+		var criteria []string
+		if len(r.MerchantCriteria) > 0 && string(r.MerchantCriteria) != "null" {
+			criteria = append(criteria, "merchant:"+compactJSON(r.MerchantCriteria))
+		}
+		if len(r.AmountCriteria) > 0 && string(r.AmountCriteria) != "null" {
+			criteria = append(criteria, "amount:"+compactJSON(r.AmountCriteria))
+		}
+		if len(r.CategoryIDs) > 0 {
+			criteria = append(criteria, fmt.Sprintf("categories:%d", len(r.CategoryIDs)))
+		}
+		var actions []string
+		if r.SetCategoryAction != nil {
+			actions = append(actions, "category→"+r.SetCategoryAction.Name)
+		}
+		if r.SetMerchantAction != nil {
+			actions = append(actions, "merchant→"+r.SetMerchantAction.Name)
+		}
+		if len(r.AddTagsAction) > 0 {
+			var names []string
+			for _, tag := range r.AddTagsAction {
+				names = append(names, tag.Name)
+			}
+			actions = append(actions, "tags+"+strings.Join(names, "/"))
+		}
+		if r.SetHideFromReportsAction != nil && *r.SetHideFromReportsAction {
+			actions = append(actions, "hide")
+		}
+		if r.ReviewStatusAction != "" {
+			actions = append(actions, "review→"+r.ReviewStatusAction)
+		}
+		last := r.LastAppliedAt
+		if len(last) > 10 {
+			last = last[:10]
+		}
+		t.row(r.ID, truncate(strings.Join(criteria, " "), 40),
+			truncate(strings.Join(actions, ", "), 36),
+			strconv.Itoa(r.RecentApplicationCount), last)
+	}
+	t.flush()
+}
+
+func compactJSON(raw []byte) string {
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, raw); err != nil {
+		return string(raw)
+	}
+	return buf.String()
+}
+
+func renderGoals(w io.Writer, goals []*monarch.Goal) {
+	t := newTable(w, "NAME", "STATUS", "BALANCE", "TARGET", "PROGRESS", "EST. DONE")
+	for _, g := range goals {
+		target := ""
+		if g.TargetAmount != 0 {
+			target = money(g.TargetAmount)
+		}
+		done := g.ForecastedCompletionDate
+		if len(done) > 10 {
+			done = done[:10]
+		}
+		t.row(truncate(g.Name, 28), g.Status, money(g.CurrentBalance), target,
+			fmt.Sprintf("%.0f%%", g.Progress*100), done)
+	}
+	t.flush()
+}
+
+func renderInstitutions(w io.Writer, creds []*monarch.Credential) {
+	t := newTable(w, "INSTITUTION", "PROVIDER", "STATUS")
+	broken := 0
+	for _, c := range creds {
+		name := ""
+		if c.Institution != nil {
+			name = c.Institution.Name
+		}
+		status := "ok"
+		if c.UpdateRequired {
+			status = "UPDATE REQUIRED"
+			broken++
+		}
+		t.row(truncate(name, 32), c.DataProvider, status)
+	}
+	t.flush()
+	if broken > 0 {
+		fmt.Fprintf(w, "\n%d connection(s) need attention — fix at app.monarch.com → Settings → Accounts\n", broken)
+	}
+}
+
+func renderDailyNetworth(w io.Writer, snaps []*monarch.DailySnapshot) {
+	t := newTable(w, "DATE", "BALANCE")
+	for _, s := range snaps {
+		t.row(s.Date.Format("2006-01-02"), money(s.Balance))
+	}
+	t.flush()
 }

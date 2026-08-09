@@ -2,6 +2,7 @@ package monarch
 
 import (
 	"context"
+	"fmt"
 	"time"
 )
 
@@ -49,10 +50,45 @@ const queryCashflow = `query Web_GetCashFlowPage($filters: TransactionFilterInpu
   }
 }`
 
-func (s *CashflowService) Get(ctx context.Context, p CashflowParams) (*Cashflow, error) {
-	// The empty search/categories/accounts/tags keys are required: the
-	// aggregates resolver misbehaves when they are absent.
-	filters := map[string]any{
+const queryCashflowSummary = `query Web_GetCashFlowSummary($filters: TransactionFilterInput) {
+  summary: aggregates(filters: $filters, fillEmptyValues: true) {
+    summary { sumIncome sumExpense savings savingsRate }
+  }
+}`
+
+// GetSummary answers "income/expenses/savings rate for a range" with a
+// single cheap aggregate — use it when the per-category/merchant breakdown
+// of Get isn't needed.
+func (s *CashflowService) GetSummary(ctx context.Context, p CashflowParams) (*CashflowSummary, error) {
+	var out struct {
+		Summary []struct {
+			Summary struct {
+				SumIncome   float64 `json:"sumIncome"`
+				SumExpense  float64 `json:"sumExpense"`
+				Savings     float64 `json:"savings"`
+				SavingsRate float64 `json:"savingsRate"`
+			} `json:"summary"`
+		} `json:"summary"`
+	}
+	if err := s.c.doGraphQL(ctx, "Web_GetCashFlowSummary", queryCashflowSummary, map[string]any{"filters": cashflowFilters(p)}, &out); err != nil {
+		return nil, err
+	}
+	if len(out.Summary) == 0 {
+		return nil, fmt.Errorf("monarch: Web_GetCashFlowSummary: empty aggregates")
+	}
+	sum := out.Summary[0].Summary
+	return &CashflowSummary{
+		Income:      sum.SumIncome,
+		Expense:     -sum.SumExpense,
+		Savings:     sum.Savings,
+		SavingsRate: sum.SavingsRate,
+	}, nil
+}
+
+// cashflowFilters builds the filter object both cashflow queries need; the
+// empty search/categories/accounts/tags keys are required by the API.
+func cashflowFilters(p CashflowParams) map[string]any {
+	return map[string]any{
 		"startDate":  p.StartDate.Format("2006-01-02"),
 		"endDate":    p.EndDate.Format("2006-01-02"),
 		"search":     "",
@@ -60,6 +96,10 @@ func (s *CashflowService) Get(ctx context.Context, p CashflowParams) (*Cashflow,
 		"accounts":   []string{},
 		"tags":       []string{},
 	}
+}
+
+func (s *CashflowService) Get(ctx context.Context, p CashflowParams) (*Cashflow, error) {
+	filters := cashflowFilters(p)
 	var out struct {
 		ByCategory []struct {
 			GroupBy struct {

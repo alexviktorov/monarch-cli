@@ -73,6 +73,41 @@ const queryGetSnapshots = `query GetSnapshotsByAccountType($startDate: Date!, $t
   }
 }`
 
+// DailySnapshot is one day's aggregate balance across all accounts
+// (optionally filtered to one account type).
+type DailySnapshot struct {
+	Date    Date    `json:"date"`
+	Balance float64 `json:"balance"`
+}
+
+const queryAggregateSnapshots = `query GetAggregateSnapshots($filters: AggregateSnapshotFilters) {
+  aggregateSnapshots(filters: $filters) {
+    date
+    balance
+  }
+}`
+
+// GetDailySnapshots returns per-day aggregate balances. Zero end means "up
+// to today"; empty accountType means all accounts.
+func (s *AccountsService) GetDailySnapshots(ctx context.Context, start, end time.Time, accountType string) ([]*DailySnapshot, error) {
+	filters := map[string]any{
+		"startDate": start.Format("2006-01-02"),
+	}
+	if !end.IsZero() {
+		filters["endDate"] = end.Format("2006-01-02")
+	}
+	if accountType != "" {
+		filters["accountType"] = accountType
+	}
+	var out struct {
+		AggregateSnapshots []*DailySnapshot `json:"aggregateSnapshots"`
+	}
+	if err := s.c.doGraphQL(ctx, "GetAggregateSnapshots", queryAggregateSnapshots, map[string]any{"filters": filters}, &out); err != nil {
+		return nil, err
+	}
+	return out.AggregateSnapshots, nil
+}
+
 func (s *AccountsService) GetSnapshots(ctx context.Context, p SnapshotParams) ([]*AccountSnapshot, error) {
 	if p.Timeframe != "month" && p.Timeframe != "year" {
 		return nil, fmt.Errorf("monarch: invalid timeframe %q (want month or year)", p.Timeframe)

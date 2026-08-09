@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // This file is the only home for mutations. Every mutation must:
@@ -80,10 +81,47 @@ func payloadErrs(operation string, errs payloadErrors) error {
 }
 
 // TransactionUpdate is a partial update: nil fields are left unchanged;
-// a pointer to the empty string clears notes.
+// a pointer to the empty string clears notes. Input key names follow the
+// web app's UpdateTransactionMutationInput.
 type TransactionUpdate struct {
-	CategoryID *string
-	Notes      *string
+	CategoryID      *string
+	Notes           *string
+	Amount          *float64
+	Date            *time.Time
+	MerchantName    *string // input key "name"; Monarch ignores empty strings
+	HideFromReports *bool
+	NeedsReview     *bool
+}
+
+func (p TransactionUpdate) empty() bool {
+	return p.CategoryID == nil && p.Notes == nil && p.Amount == nil &&
+		p.Date == nil && p.MerchantName == nil && p.HideFromReports == nil && p.NeedsReview == nil
+}
+
+func (p TransactionUpdate) input(id string) map[string]any {
+	input := map[string]any{"id": id}
+	if p.CategoryID != nil {
+		input["category"] = *p.CategoryID
+	}
+	if p.Notes != nil {
+		input["notes"] = *p.Notes
+	}
+	if p.Amount != nil {
+		input["amount"] = *p.Amount
+	}
+	if p.Date != nil {
+		input["date"] = p.Date.Format("2006-01-02")
+	}
+	if p.MerchantName != nil {
+		input["name"] = *p.MerchantName
+	}
+	if p.HideFromReports != nil {
+		input["hideFromReports"] = *p.HideFromReports
+	}
+	if p.NeedsReview != nil {
+		input["needsReview"] = *p.NeedsReview
+	}
+	return input
 }
 
 const mutationUpdateTransaction = `mutation Web_TransactionDrawerUpdateTransaction($input: UpdateTransactionMutationInput!) {
@@ -106,16 +144,10 @@ func (s *TransactionsService) Update(ctx context.Context, id string, p Transacti
 	if id == "" {
 		return nil, errors.New("monarch: Update: transaction id required")
 	}
-	if p.CategoryID == nil && p.Notes == nil {
+	if p.empty() {
 		return nil, errors.New("monarch: Update: nothing to change")
 	}
-	input := map[string]any{"id": id}
-	if p.CategoryID != nil {
-		input["category"] = *p.CategoryID
-	}
-	if p.Notes != nil {
-		input["notes"] = *p.Notes
-	}
+	input := p.input(id)
 	var out struct {
 		UpdateTransaction struct {
 			Transaction *Transaction  `json:"transaction"`
@@ -177,4 +209,44 @@ func (s *TransactionsService) SetTags(ctx context.Context, id string, tagIDs []s
 		return nil, nil
 	}
 	return out.SetTransactionTags.Transaction.Tags, nil
+}
+
+const mutationCreateTag = `mutation Common_CreateTransactionTag($input: CreateTransactionTagInput!) {
+  createTransactionTag(input: $input) {
+    tag { id name }
+    errors { message }
+  }
+}`
+
+// Create creates a transaction tag (color optional, e.g. "#e11d21").
+// Requires WithWritesEnabled.
+func (s *TagsService) Create(ctx context.Context, name, color string) (*Tag, error) {
+	if err := s.c.requireWrites(); err != nil {
+		return nil, err
+	}
+	if name == "" {
+		return nil, errors.New("monarch: CreateTag: name required")
+	}
+	input := map[string]any{"name": name}
+	if color != "" {
+		input["color"] = color
+	}
+	var out struct {
+		CreateTransactionTag struct {
+			Tag    *Tag          `json:"tag"`
+			Errors payloadErrors `json:"errors"`
+		} `json:"createTransactionTag"`
+	}
+	err := s.c.doGraphQLNoRetry(ctx, "Common_CreateTransactionTag", mutationCreateTag,
+		map[string]any{"input": input}, &out)
+	if err != nil {
+		return nil, err
+	}
+	if len(out.CreateTransactionTag.Errors) > 0 {
+		return nil, payloadErrs("CreateTransactionTag", out.CreateTransactionTag.Errors)
+	}
+	if out.CreateTransactionTag.Tag == nil {
+		return nil, errors.New("monarch: CreateTransactionTag: no tag in response")
+	}
+	return out.CreateTransactionTag.Tag, nil
 }

@@ -16,16 +16,26 @@ AUTH
   whoami         Show the current session
 
 DATA (all support --json)
+  overview       Accounts + this month's cashflow + recent transactions
   accounts       List accounts with balances        [--all]
   transactions   List transactions                  [--start --end --limit --offset
                                                      --search --account --category
-                                                     --min --max]
+                                                     --tag --min --max --has-notes
+                                                     --has-attachments --is-split
+                                                     --is-recurring --hidden
+                                                     --needs-review --all --csv
+                                                     --id <txID>]
   summary        Lifetime transaction summary
-  budget         Budget vs. actual for a month      [--month YYYY-MM]
+  budget         Budget vs. actual for a month      [--month YYYY-MM --csv]
   cashflow       Income/expense + top categories    [--start --end --top N]
   categories     List category IDs (for filtering)
   recurring      Recurring subscriptions & bills
-  networth       Net worth history                  [--start --timeframe month|year]
+  networth       Net worth history                  [--start --timeframe month|year
+                                                     --daily]
+  holdings       Investment holdings                [--account id]
+  rules          Auto-categorization rules
+  goals          Savings goals
+  institutions   Connection health per institution
 
 MCP
   mcp            Serve an MCP server on stdio       [--allow-writes]
@@ -73,6 +83,16 @@ func main() {
 		cmdRecurring(args)
 	case "networth":
 		cmdNetworth(args)
+	case "holdings":
+		cmdHoldings(args)
+	case "rules":
+		cmdRules(args)
+	case "goals":
+		cmdGoals(args)
+	case "institutions":
+		cmdInstitutions(args)
+	case "overview":
+		cmdOverview(args)
 	case "mcp":
 		cmdMCP(args)
 	case "help", "-h", "--help":

@@ -63,7 +63,16 @@ type TransactionQuery struct {
 	search         string
 	accounts       []string
 	categories     []string
+	tags           []string
 	minAmt, maxAmt *float64
+	// Server-side boolean filters (nil = no filter). Key names match the
+	// web app's TransactionFilterInput.
+	hasNotes        *bool
+	hasAttachments  *bool
+	isSplit         *bool
+	isRecurring     *bool
+	hideFromReports *bool
+	needsReview     *bool
 }
 
 func (q *TransactionQuery) Limit(n int) *TransactionQuery  { q.limit = n; return q }
@@ -81,6 +90,26 @@ func (q *TransactionQuery) WithCategories(ids ...string) *TransactionQuery {
 	q.categories = append(q.categories, ids...)
 	return q
 }
+func (q *TransactionQuery) WithTags(ids ...string) *TransactionQuery {
+	q.tags = append(q.tags, ids...)
+	return q
+}
+func (q *TransactionQuery) WithHasNotes(v bool) *TransactionQuery { q.hasNotes = &v; return q }
+func (q *TransactionQuery) WithHasAttachments(v bool) *TransactionQuery {
+	q.hasAttachments = &v
+	return q
+}
+func (q *TransactionQuery) WithIsSplit(v bool) *TransactionQuery     { q.isSplit = &v; return q }
+func (q *TransactionQuery) WithIsRecurring(v bool) *TransactionQuery { q.isRecurring = &v; return q }
+func (q *TransactionQuery) WithHiddenFromReports(v bool) *TransactionQuery {
+	q.hideFromReports = &v
+	return q
+}
+
+// WithNeedsReview filters to transactions flagged for review. The filter
+// key is derived from robcerda/monarch-mcp-server; verify on first live
+// use.
+func (q *TransactionQuery) WithNeedsReview(v bool) *TransactionQuery { q.needsReview = &v; return q }
 
 // WithMinAmount / WithMaxAmount bound the transaction's absolute value.
 // The server's filter input has no amount fields, so these are applied
@@ -105,6 +134,21 @@ func (q *TransactionQuery) Execute(ctx context.Context) (*TransactionList, error
 	}
 	if len(q.categories) > 0 {
 		filters["categories"] = q.categories
+	}
+	if len(q.tags) > 0 {
+		filters["tags"] = q.tags
+	}
+	for key, v := range map[string]*bool{
+		"hasNotes":        q.hasNotes,
+		"hasAttachments":  q.hasAttachments,
+		"isSplit":         q.isSplit,
+		"isRecurring":     q.isRecurring,
+		"hideFromReports": q.hideFromReports,
+		"needsReview":     q.needsReview,
+	} {
+		if v != nil {
+			filters[key] = *v
+		}
 	}
 	// The filters object is always sent, even when empty — the API expects
 	// the variable to be present (GetSummary and every known-working client
@@ -148,6 +192,99 @@ func (q *TransactionQuery) Execute(ctx context.Context) (*TransactionList, error
 		HasMore:      next < out.AllTransactions.TotalCount,
 		NextOffset:   next,
 	}, nil
+}
+
+// TransactionDetail is the full single-transaction view (the web app's
+// "drawer"), including split children.
+type TransactionDetail struct {
+	Transaction
+	Pending              bool                `json:"pending"`
+	HideFromReports      bool                `json:"hideFromReports"`
+	IsRecurring          bool                `json:"isRecurring"`
+	NeedsReview          bool                `json:"needsReview"`
+	HasSplitTransactions bool                `json:"hasSplitTransactions"`
+	IsSplitTransaction   bool                `json:"isSplitTransaction"`
+	Splits               []*TransactionSplit `json:"splitTransactions"`
+}
+
+type TransactionSplit struct {
+	ID       string       `json:"id"`
+	Amount   float64      `json:"amount"`
+	Notes    string       `json:"notes"`
+	Merchant *MerchantRef `json:"merchant"`
+	Category *CategoryRef `json:"category"`
+}
+
+const queryGetTransaction = `query GetTransactionDetails($id: UUID!) {
+  getTransaction(id: $id) {
+    id
+    amount
+    pending
+    date
+    hideFromReports
+    plaidName
+    notes
+    isRecurring
+    needsReview
+    hasSplitTransactions
+    isSplitTransaction
+    category { id name }
+    merchant { id name }
+    account { id displayName }
+    tags { id name }
+    splitTransactions {
+      id
+      amount
+      notes
+      merchant { id name }
+      category { id name }
+    }
+  }
+}`
+
+// Get fetches one transaction with full detail by id.
+func (s *TransactionsService) Get(ctx context.Context, id string) (*TransactionDetail, error) {
+	if id == "" {
+		return nil, fmt.Errorf("monarch: Get: transaction id required")
+	}
+	var out struct {
+		GetTransaction *TransactionDetail `json:"getTransaction"`
+	}
+	if err := s.c.doGraphQL(ctx, "GetTransactionDetails", queryGetTransaction, map[string]any{"id": id}, &out); err != nil {
+		return nil, err
+	}
+	if out.GetTransaction == nil {
+		return nil, fmt.Errorf("monarch: GetTransactionDetails: transaction %s not found", id)
+	}
+	return out.GetTransaction, nil
+}
+
+// All fetches every matching transaction across pages, up to max (0 means
+// 10000), honoring ctx cancellation between pages. The query's offset is
+// advanced destructively; treat the builder as consumed afterwards.
+func (q *TransactionQuery) All(ctx context.Context, max int) ([]*Transaction, error) {
+	if max <= 0 {
+		max = 10000
+	}
+	if q.limit <= 0 || q.limit > 500 {
+		q.limit = 500
+	}
+	var all []*Transaction
+	for {
+		list, err := q.Execute(ctx)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, list.Transactions...)
+		if !list.HasMore || len(all) >= max {
+			break
+		}
+		q.offset = list.NextOffset
+	}
+	if len(all) > max {
+		all = all[:max]
+	}
+	return all, nil
 }
 
 type TransactionSummary struct {

@@ -31,6 +31,10 @@ type Client struct {
 	Cashflow     *CashflowService
 	Recurring    *RecurringService
 	Tags         *TagsService
+	Holdings     *HoldingsService
+	Rules        *RulesService
+	Goals        *GoalsService
+	Institutions *InstitutionsService
 }
 
 type Option func(*Client)
@@ -138,6 +142,10 @@ func New(opts ...Option) (*Client, error) {
 	c.Cashflow = &CashflowService{c: c}
 	c.Recurring = &RecurringService{c: c}
 	c.Tags = &TagsService{c: c}
+	c.Holdings = &HoldingsService{c: c}
+	c.Rules = &RulesService{c: c}
+	c.Goals = &GoalsService{c: c}
+	c.Institutions = &InstitutionsService{c: c}
 	return c, nil
 }
 

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func mustDecode(t *testing.T, r *http.Request, into *gqlRequest) {
@@ -162,6 +163,71 @@ func TestSetTagsEmptyClearsAll(t *testing.T) {
 	ids, ok := input["tagIds"].([]any)
 	if !ok || len(ids) != 0 {
 		t.Errorf("tagIds = %v, want empty array (clears tags), not absent", input["tagIds"])
+	}
+}
+
+func TestUpdateTransactionExtendedFields(t *testing.T) {
+	var vars map[string]any
+	c := writesClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req gqlRequest
+		mustDecode(t, r, &req)
+		vars = req.Variables
+		w.Write([]byte(`{"data":{"updateTransaction":{"transaction":{"id":"t1"},"errors":[]}}}`))
+	}))
+	amount, merchant, hide, review := -42.5, "Costco", true, false
+	d, err := time.Parse("2006-01-02", "2026-08-05")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = c.Transactions.Update(context.Background(), "t1", TransactionUpdate{
+		Amount: &amount, Date: &d, MerchantName: &merchant,
+		HideFromReports: &hide, NeedsReview: &review,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, _ := vars["input"].(map[string]any)
+	if input["amount"] != -42.5 || input["date"] != "2026-08-05" || input["name"] != "Costco" {
+		t.Errorf("input = %v", input)
+	}
+	if input["hideFromReports"] != true || input["needsReview"] != false {
+		t.Errorf("bool fields = %v", input)
+	}
+	if _, has := input["category"]; has {
+		t.Error("unset category must not be sent")
+	}
+}
+
+func TestTagsCreate(t *testing.T) {
+	var vars map[string]any
+	c := writesClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req gqlRequest
+		mustDecode(t, r, &req)
+		if req.OperationName != "Common_CreateTransactionTag" {
+			t.Errorf("operation = %q", req.OperationName)
+		}
+		vars = req.Variables
+		w.Write([]byte(`{"data":{"createTransactionTag":{"tag":{"id":"g9","name":"vacations"},"errors":[]}}}`))
+	}))
+	tag, err := c.Tags.Create(context.Background(), "vacations", "#e11d21")
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, _ := vars["input"].(map[string]any)
+	if input["name"] != "vacations" || input["color"] != "#e11d21" {
+		t.Errorf("input = %v", input)
+	}
+	if tag.ID != "g9" {
+		t.Errorf("tag = %+v", tag)
+	}
+}
+
+func TestTagsCreateGated(t *testing.T) {
+	c := authedClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("gated write must not reach the network")
+	}))
+	if _, err := c.Tags.Create(context.Background(), "x", ""); !errors.Is(err, ErrWritesDisabled) {
+		t.Fatalf("err = %v, want ErrWritesDisabled", err)
 	}
 }
 
