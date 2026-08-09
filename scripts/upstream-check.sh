@@ -9,8 +9,18 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 state_file="$repo_root/.upstream-state"
-since="$(cat "$state_file" 2>/dev/null || echo 2026-08-01T00:00:00Z)"
 now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+# Window resolution: MONARCH_UPSTREAM_SINCE_DAYS (a rolling window, used by
+# stateless CI) wins; otherwise the last-run timestamp in .upstream-state;
+# otherwise a fixed floor.
+if [ -n "${MONARCH_UPSTREAM_SINCE_DAYS:-}" ]; then
+  # GNU date (Linux/CI) and BSD date (macOS) differ; try both.
+  since="$(date -u -d "${MONARCH_UPSTREAM_SINCE_DAYS} days ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+    || date -u -v-"${MONARCH_UPSTREAM_SINCE_DAYS}"d +%Y-%m-%dT%H:%M:%SZ)"
+else
+  since="$(cat "$state_file" 2>/dev/null || echo 2026-08-01T00:00:00Z)"
+fi
 
 repos=(
   hammem/monarchmoney

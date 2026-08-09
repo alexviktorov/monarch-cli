@@ -1,0 +1,35 @@
+name: upstream-drift
+
+# Monthly (and on-demand) check of the Monarch client ecosystem for
+# API-breakage signals. Opens an issue only when the check flags an
+# auth-related upstream commit. Read-only against public repos.
+
+on:
+  schedule:
+    - cron: '0 14 1 * *' # 1st of each month, 14:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      # Rolling ~35-day window (each CI run starts stateless).
+      MONARCH_UPSTREAM_SINCE_DAYS: '35'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run drift check
+        id: check
+        run: |
+          set +e
+          bash scripts/upstream-check.sh | tee drift-report.txt
+          echo "flagged=$?" >> "$GITHUB_OUTPUT"
+      - name: Open issue on auth-flagged drift
+        if: steps.check.outputs.flagged != '0'
+        # Body comes from a FILE, never interpolated into the shell — the
+        # report contains untrusted upstream commit text.
+        run: gh issue create --title "Upstream drift: auth-related changes detected" --body-file drift-report.txt --label upstream-drift || true
