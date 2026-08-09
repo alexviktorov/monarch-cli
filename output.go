@@ -10,11 +10,15 @@ import (
 	"text/tabwriter"
 )
 
-// printJSON pretty-prints any value as JSON to stdout.
-func printJSON(v any) error {
+// printJSON pretty-prints any value as JSON to stdout. An encode/write
+// failure (broken pipe aside) must not pass silently — flagged by GoLand:
+// every call site was discarding the error.
+func printJSON(v any) {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
-	return enc.Encode(v)
+	if err := enc.Encode(v); err != nil {
+		fatal("writing JSON output: %v", err)
+	}
 }
 
 // money formats a float as a dollar amount with thousands separators,

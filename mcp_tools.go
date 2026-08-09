@@ -293,7 +293,7 @@ type getAccountsOut struct {
 	NetWorth         float64      `json:"net_worth"`
 }
 
-func (h *toolHandlers) getAccounts(ctx context.Context, req *mcp.CallToolRequest, in getAccountsIn) (*mcp.CallToolResult, getAccountsOut, error) {
+func (h *toolHandlers) getAccounts(ctx context.Context, _ *mcp.CallToolRequest, in getAccountsIn) (*mcp.CallToolResult, getAccountsOut, error) {
 	accounts, err := h.api.ListAccounts(ctx)
 	if err != nil {
 		return nil, getAccountsOut{}, err
@@ -372,7 +372,7 @@ type getTransactionsOut struct {
 	Transactions         []txOut `json:"transactions"`
 }
 
-func (h *toolHandlers) getTransactions(ctx context.Context, req *mcp.CallToolRequest, in getTransactionsIn) (*mcp.CallToolResult, getTransactionsOut, error) {
+func (h *toolHandlers) getTransactions(ctx context.Context, _ *mcp.CallToolRequest, in getTransactionsIn) (*mcp.CallToolResult, getTransactionsOut, error) {
 	var zero getTransactionsOut
 	q := txQuery{
 		Search:            in.Search,
@@ -460,7 +460,7 @@ type summaryOut struct {
 	LargestExpense float64 `json:"largest_expense"`
 }
 
-func (h *toolHandlers) getSummary(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*mcp.CallToolResult, summaryOut, error) {
+func (h *toolHandlers) getSummary(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, summaryOut, error) {
 	s, err := h.api.GetSummary(ctx)
 	if err != nil {
 		return nil, summaryOut{}, err
@@ -497,7 +497,7 @@ type getBudgetOut struct {
 	TotalSpent    float64        `json:"total_spent"`
 }
 
-func (h *toolHandlers) getBudget(ctx context.Context, req *mcp.CallToolRequest, in getBudgetIn) (*mcp.CallToolResult, getBudgetOut, error) {
+func (h *toolHandlers) getBudget(ctx context.Context, _ *mcp.CallToolRequest, in getBudgetIn) (*mcp.CallToolResult, getBudgetOut, error) {
 	var zero getBudgetOut
 	now := time.Now()
 	if in.Month != "" {
@@ -556,7 +556,7 @@ type getCashflowOut struct {
 	ByMerchant  []cashflowGroupOut `json:"by_merchant"`
 }
 
-func (h *toolHandlers) getCashflow(ctx context.Context, req *mcp.CallToolRequest, in getCashflowIn) (*mcp.CallToolResult, getCashflowOut, error) {
+func (h *toolHandlers) getCashflow(ctx context.Context, _ *mcp.CallToolRequest, in getCashflowIn) (*mcp.CallToolResult, getCashflowOut, error) {
 	var zero getCashflowOut
 	start, end := monthRange(time.Now())
 	end = time.Now()
@@ -614,7 +614,7 @@ type getCategoriesOut struct {
 	Categories []categoryOut `json:"categories"`
 }
 
-func (h *toolHandlers) getCategories(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*mcp.CallToolResult, getCategoriesOut, error) {
+func (h *toolHandlers) getCategories(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, getCategoriesOut, error) {
 	cats, err := h.api.ListCategories(ctx)
 	if err != nil {
 		return nil, getCategoriesOut{}, err
@@ -639,7 +639,7 @@ type getTagsOut struct {
 	Tags []refOut `json:"tags"`
 }
 
-func (h *toolHandlers) getTags(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*mcp.CallToolResult, getTagsOut, error) {
+func (h *toolHandlers) getTags(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, getTagsOut, error) {
 	tags, err := h.api.ListTags(ctx)
 	if err != nil {
 		return nil, getTagsOut{}, err
@@ -666,7 +666,7 @@ type getRecurringOut struct {
 	EstimatedMonthly float64            `json:"estimated_monthly_spend"`
 }
 
-func (h *toolHandlers) getRecurring(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*mcp.CallToolResult, getRecurringOut, error) {
+func (h *toolHandlers) getRecurring(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, getRecurringOut, error) {
 	recs, err := h.api.ListRecurring(ctx)
 	if err != nil {
 		return nil, getRecurringOut{}, err
@@ -706,7 +706,7 @@ type getNetworthOut struct {
 	Points []networthPointOut `json:"points"`
 }
 
-func (h *toolHandlers) getNetworth(ctx context.Context, req *mcp.CallToolRequest, in getNetworthIn) (*mcp.CallToolResult, getNetworthOut, error) {
+func (h *toolHandlers) getNetworth(ctx context.Context, _ *mcp.CallToolRequest, in getNetworthIn) (*mcp.CallToolResult, getNetworthOut, error) {
 	var zero getNetworthOut
 	start := time.Now().AddDate(-1, 0, 0)
 	var err error
@@ -754,7 +754,7 @@ type checkSessionOut struct {
 	Detail string `json:"detail,omitempty"`
 }
 
-func (h *toolHandlers) checkSession(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*mcp.CallToolResult, checkSessionOut, error) {
+func (h *toolHandlers) checkSession(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, checkSessionOut, error) {
 	id, err := h.api.Ping(ctx)
 	if err != nil {
 		// Structured non-error so the model can read the state directly.
@@ -787,7 +787,7 @@ type getTransactionOut struct {
 	Splits          []splitOut `json:"splits,omitempty"`
 }
 
-func (h *toolHandlers) getTransaction(ctx context.Context, req *mcp.CallToolRequest, in getTransactionIn) (*mcp.CallToolResult, getTransactionOut, error) {
+func (h *toolHandlers) getTransaction(ctx context.Context, _ *mcp.CallToolRequest, in getTransactionIn) (*mcp.CallToolResult, getTransactionOut, error) {
 	var zero getTransactionOut
 	if in.TransactionID == "" {
 		return nil, zero, errors.New("transaction_id is required")
@@ -833,7 +833,7 @@ type getCashflowSummaryOut struct {
 	SavingsRate float64 `json:"savings_rate"`
 }
 
-func (h *toolHandlers) getCashflowSummary(ctx context.Context, req *mcp.CallToolRequest, in getCashflowIn) (*mcp.CallToolResult, getCashflowSummaryOut, error) {
+func (h *toolHandlers) getCashflowSummary(ctx context.Context, _ *mcp.CallToolRequest, in getCashflowIn) (*mcp.CallToolResult, getCashflowSummaryOut, error) {
 	var zero getCashflowSummaryOut
 	start, end := monthRange(time.Now())
 	end = time.Now()
@@ -881,7 +881,7 @@ type getHoldingsOut struct {
 	TotalValue float64      `json:"total_value"`
 }
 
-func (h *toolHandlers) getHoldings(ctx context.Context, req *mcp.CallToolRequest, in getHoldingsIn) (*mcp.CallToolResult, getHoldingsOut, error) {
+func (h *toolHandlers) getHoldings(ctx context.Context, _ *mcp.CallToolRequest, in getHoldingsIn) (*mcp.CallToolResult, getHoldingsOut, error) {
 	holdings, err := h.api.ListHoldings(ctx, in.AccountID)
 	if err != nil {
 		return nil, getHoldingsOut{}, err
@@ -919,7 +919,7 @@ type getRulesOut struct {
 	Rules []ruleOut `json:"rules"`
 }
 
-func (h *toolHandlers) getRules(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*mcp.CallToolResult, getRulesOut, error) {
+func (h *toolHandlers) getRules(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, getRulesOut, error) {
 	rules, err := h.api.ListRules(ctx)
 	if err != nil {
 		return nil, getRulesOut{}, err
@@ -973,7 +973,7 @@ type getGoalsOut struct {
 	Goals []goalOut `json:"goals"`
 }
 
-func (h *toolHandlers) getGoals(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*mcp.CallToolResult, getGoalsOut, error) {
+func (h *toolHandlers) getGoals(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, getGoalsOut, error) {
 	goals, err := h.api.ListGoals(ctx)
 	if err != nil {
 		return nil, getGoalsOut{}, err
@@ -1003,7 +1003,7 @@ type getInstitutionsOut struct {
 	NeedingAttention int              `json:"needing_attention"`
 }
 
-func (h *toolHandlers) getInstitutions(ctx context.Context, req *mcp.CallToolRequest, in struct{}) (*mcp.CallToolResult, getInstitutionsOut, error) {
+func (h *toolHandlers) getInstitutions(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, getInstitutionsOut, error) {
 	creds, err := h.api.ListInstitutions(ctx)
 	if err != nil {
 		return nil, getInstitutionsOut{}, err
@@ -1041,7 +1041,7 @@ type updateTransactionOut struct {
 	Updated []string `json:"updated"`
 }
 
-func (h *toolHandlers) updateTransaction(ctx context.Context, req *mcp.CallToolRequest, in updateTransactionIn) (*mcp.CallToolResult, updateTransactionOut, error) {
+func (h *toolHandlers) updateTransaction(ctx context.Context, _ *mcp.CallToolRequest, in updateTransactionIn) (*mcp.CallToolResult, updateTransactionOut, error) {
 	var zero updateTransactionOut
 	// Defense in depth: the tool is only registered when writes are on,
 	// but re-check in case a future refactor breaks that invariant.
@@ -1066,7 +1066,7 @@ func (h *toolHandlers) updateTransaction(ctx context.Context, req *mcp.CallToolR
 		}
 		patch.Date = &d
 	}
-	patchFields := []string{}
+	var patchFields []string
 	for name, set := range map[string]bool{
 		"category": in.CategoryID != nil, "notes": in.Notes != nil,
 		"amount": in.Amount != nil, "date": in.Date != nil,
@@ -1127,7 +1127,7 @@ type createTagOut struct {
 	Name string `json:"name"`
 }
 
-func (h *toolHandlers) createTag(ctx context.Context, req *mcp.CallToolRequest, in createTagIn) (*mcp.CallToolResult, createTagOut, error) {
+func (h *toolHandlers) createTag(ctx context.Context, _ *mcp.CallToolRequest, in createTagIn) (*mcp.CallToolResult, createTagOut, error) {
 	var zero createTagOut
 	if !h.writes {
 		return nil, zero, errors.New("write tools are disabled on this server")
@@ -1167,7 +1167,7 @@ type bulkCategorizeOut struct {
 	Failed    int              `json:"failed,omitempty"`
 }
 
-func (h *toolHandlers) bulkCategorize(ctx context.Context, req *mcp.CallToolRequest, in bulkCategorizeIn) (*mcp.CallToolResult, bulkCategorizeOut, error) {
+func (h *toolHandlers) bulkCategorize(ctx context.Context, _ *mcp.CallToolRequest, in bulkCategorizeIn) (*mcp.CallToolResult, bulkCategorizeOut, error) {
 	var zero bulkCategorizeOut
 	if !h.writes {
 		return nil, zero, errors.New("write tools are disabled on this server")
@@ -1254,7 +1254,7 @@ type setSplitsOut struct {
 	Splits        []splitOut `json:"splits,omitempty"`
 }
 
-func (h *toolHandlers) setSplits(ctx context.Context, req *mcp.CallToolRequest, in setSplitsIn) (*mcp.CallToolResult, setSplitsOut, error) {
+func (h *toolHandlers) setSplits(ctx context.Context, _ *mcp.CallToolRequest, in setSplitsIn) (*mcp.CallToolResult, setSplitsOut, error) {
 	var zero setSplitsOut
 	if err := h.requireWriteMode(); err != nil {
 		return nil, zero, err
@@ -1316,7 +1316,7 @@ type createTransactionOut struct {
 	TransactionID string `json:"transaction_id"`
 }
 
-func (h *toolHandlers) createTransaction(ctx context.Context, req *mcp.CallToolRequest, in createTransactionIn) (*mcp.CallToolResult, createTransactionOut, error) {
+func (h *toolHandlers) createTransaction(ctx context.Context, _ *mcp.CallToolRequest, in createTransactionIn) (*mcp.CallToolResult, createTransactionOut, error) {
 	var zero createTransactionOut
 	if err := h.requireWriteMode(); err != nil {
 		return nil, zero, err
@@ -1353,7 +1353,7 @@ type setBudgetOut struct {
 	Month        string  `json:"month"`
 }
 
-func (h *toolHandlers) setBudget(ctx context.Context, req *mcp.CallToolRequest, in setBudgetIn) (*mcp.CallToolResult, setBudgetOut, error) {
+func (h *toolHandlers) setBudget(ctx context.Context, _ *mcp.CallToolRequest, in setBudgetIn) (*mcp.CallToolResult, setBudgetOut, error) {
 	var zero setBudgetOut
 	if err := h.requireWriteMode(); err != nil {
 		return nil, zero, err
@@ -1396,7 +1396,7 @@ type updateMerchantOut struct {
 	Name string `json:"name"`
 }
 
-func (h *toolHandlers) updateMerchant(ctx context.Context, req *mcp.CallToolRequest, in updateMerchantIn) (*mcp.CallToolResult, updateMerchantOut, error) {
+func (h *toolHandlers) updateMerchant(ctx context.Context, _ *mcp.CallToolRequest, in updateMerchantIn) (*mcp.CallToolResult, updateMerchantOut, error) {
 	var zero updateMerchantOut
 	if err := h.requireWriteMode(); err != nil {
 		return nil, zero, err
@@ -1444,7 +1444,7 @@ type categoryWriteOut struct {
 	Name string `json:"name"`
 }
 
-func (h *toolHandlers) createCategory(ctx context.Context, req *mcp.CallToolRequest, in createCategoryIn) (*mcp.CallToolResult, categoryWriteOut, error) {
+func (h *toolHandlers) createCategory(ctx context.Context, _ *mcp.CallToolRequest, in createCategoryIn) (*mcp.CallToolResult, categoryWriteOut, error) {
 	var zero categoryWriteOut
 	if err := h.requireWriteMode(); err != nil {
 		return nil, zero, err
@@ -1463,7 +1463,7 @@ type updateCategoryIn struct {
 	Icon       *string `json:"icon,omitempty" jsonschema:"omit to leave unchanged"`
 }
 
-func (h *toolHandlers) updateCategory(ctx context.Context, req *mcp.CallToolRequest, in updateCategoryIn) (*mcp.CallToolResult, categoryWriteOut, error) {
+func (h *toolHandlers) updateCategory(ctx context.Context, _ *mcp.CallToolRequest, in updateCategoryIn) (*mcp.CallToolResult, categoryWriteOut, error) {
 	var zero categoryWriteOut
 	if err := h.requireWriteMode(); err != nil {
 		return nil, zero, err
@@ -1493,7 +1493,7 @@ type deletedOut struct {
 	Deleted bool `json:"deleted"`
 }
 
-func (h *toolHandlers) deleteCategory(ctx context.Context, req *mcp.CallToolRequest, in deleteCategoryIn) (*mcp.CallToolResult, deletedOut, error) {
+func (h *toolHandlers) deleteCategory(ctx context.Context, _ *mcp.CallToolRequest, in deleteCategoryIn) (*mcp.CallToolResult, deletedOut, error) {
 	var zero deletedOut
 	if err := h.requireWriteMode(); err != nil {
 		return nil, zero, err
@@ -1574,7 +1574,7 @@ func ruleIDs(rules []*monarch.Rule) map[string]bool {
 	return ids
 }
 
-func (h *toolHandlers) createRule(ctx context.Context, req *mcp.CallToolRequest, in ruleFieldsIn) (*mcp.CallToolResult, createRuleOut, error) {
+func (h *toolHandlers) createRule(ctx context.Context, _ *mcp.CallToolRequest, in ruleFieldsIn) (*mcp.CallToolResult, createRuleOut, error) {
 	var zero createRuleOut
 	if err := h.requireWriteMode(); err != nil {
 		return nil, zero, err
@@ -1617,7 +1617,7 @@ type updateRuleIn struct {
 	ruleFieldsIn
 }
 
-func (h *toolHandlers) updateRule(ctx context.Context, req *mcp.CallToolRequest, in updateRuleIn) (*mcp.CallToolResult, deletedOut, error) {
+func (h *toolHandlers) updateRule(ctx context.Context, _ *mcp.CallToolRequest, in updateRuleIn) (*mcp.CallToolResult, deletedOut, error) {
 	var zero deletedOut
 	if err := h.requireWriteMode(); err != nil {
 		return nil, zero, err
@@ -1641,7 +1641,7 @@ type deleteRuleIn struct {
 	Confirm bool   `json:"confirm" jsonschema:"must be true — this permanently deletes the rule"`
 }
 
-func (h *toolHandlers) deleteRule(ctx context.Context, req *mcp.CallToolRequest, in deleteRuleIn) (*mcp.CallToolResult, deletedOut, error) {
+func (h *toolHandlers) deleteRule(ctx context.Context, _ *mcp.CallToolRequest, in deleteRuleIn) (*mcp.CallToolResult, deletedOut, error) {
 	var zero deletedOut
 	if err := h.requireWriteMode(); err != nil {
 		return nil, zero, err

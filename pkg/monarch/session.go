@@ -120,7 +120,7 @@ func (f *fileStore) Save(s *Session) error {
 		return err
 	}
 	if _, err := fh.Write(data); err != nil {
-		fh.Close()
+		_ = fh.Close()
 		_ = root.Remove(tmp)
 		return err
 	}

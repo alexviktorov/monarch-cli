@@ -148,7 +148,7 @@ func (c *Client) do(ctx context.Context, operation string, build func() (*http.R
 			continue
 		}
 		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if readErr != nil {
 			lastErr = fmt.Errorf("monarch: %s: read response: %w", operation, readErr)
 			continue
