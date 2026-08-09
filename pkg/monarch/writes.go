@@ -873,8 +873,10 @@ func (s *RulesService) Update(ctx context.Context, id string, r RuleInput) error
 	return nil
 }
 
-// Delete removes a rule. The API may return deleted as null/absent on
-// SUCCESS, so only an explicit false (or an errors payload) is failure.
+// Delete removes a rule. The `deleted` flag is UNRELIABLE IN BOTH
+// DIRECTIONS (verified live 2026-08-09: the server returned deleted:false
+// for a deletion that succeeded), so the errors payload is the only
+// failure signal; confirm with Rules.List when certainty matters.
 // Requires WithWritesEnabled.
 func (s *RulesService) Delete(ctx context.Context, id string) error {
 	if err := s.c.requireWrites(); err != nil {
@@ -885,8 +887,7 @@ func (s *RulesService) Delete(ctx context.Context, id string) error {
 	}
 	var out struct {
 		DeleteTransactionRule struct {
-			Deleted *bool         `json:"deleted"`
-			Errors  payloadErrors `json:"errors"`
+			Errors payloadErrors `json:"errors"`
 		} `json:"deleteTransactionRule"`
 	}
 	err := s.c.doGraphQLNoRetry(ctx, "Common_DeleteTransactionRule", mutationDeleteRule,
@@ -896,9 +897,6 @@ func (s *RulesService) Delete(ctx context.Context, id string) error {
 	}
 	if len(out.DeleteTransactionRule.Errors) > 0 {
 		return payloadErrs("DeleteTransactionRule", out.DeleteTransactionRule.Errors)
-	}
-	if out.DeleteTransactionRule.Deleted != nil && !*out.DeleteTransactionRule.Deleted {
-		return errors.New("monarch: DeleteTransactionRule: rule was not deleted")
 	}
 	return nil
 }

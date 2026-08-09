@@ -582,19 +582,27 @@ func TestRuleUpdateAddsID(t *testing.T) {
 	}
 }
 
-func TestRuleDeleteToleratesNullDeleted(t *testing.T) {
-	// deleted can be null/absent ON SUCCESS — only explicit false or an
-	// errors payload is failure.
-	c, vars := writesJSON(t, `{"data":{"deleteTransactionRule":{"deleted":null,"errors":[]}}}`)
-	if err := c.Rules.Delete(context.Background(), "r1"); err != nil {
-		t.Fatalf("null deleted must be success, got %v", err)
+func TestRuleDeleteIgnoresDeletedFlag(t *testing.T) {
+	// The deleted flag is unreliable in BOTH directions (verified live:
+	// the server returned deleted:false for a successful deletion). Only
+	// the errors payload signals failure.
+	for _, payload := range []string{
+		`{"data":{"deleteTransactionRule":{"deleted":null,"errors":[]}}}`,
+		`{"data":{"deleteTransactionRule":{"deleted":false,"errors":[]}}}`,
+		`{"data":{"deleteTransactionRule":{"deleted":true,"errors":[]}}}`,
+	} {
+		c, vars := writesJSON(t, payload)
+		if err := c.Rules.Delete(context.Background(), "r1"); err != nil {
+			t.Fatalf("payload %s must be success, got %v", payload, err)
+		}
+		if (*vars)["id"] != "r1" {
+			t.Errorf("vars = %v", *vars)
+		}
 	}
-	if (*vars)["id"] != "r1" {
-		t.Errorf("vars = %v", *vars)
-	}
-	c2, _ := writesJSON(t, `{"data":{"deleteTransactionRule":{"deleted":false,"errors":[]}}}`)
-	if err := c2.Rules.Delete(context.Background(), "r1"); err == nil {
-		t.Error("explicit deleted=false must be failure")
+	c, _ := writesJSON(t, `{"data":{"deleteTransactionRule":{"deleted":false,
+		"errors":{"message":"Rule not found","code":"NOT_FOUND"}}}}`)
+	if err := c.Rules.Delete(context.Background(), "r1"); err == nil {
+		t.Error("an errors payload must be failure")
 	}
 }
 
