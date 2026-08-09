@@ -22,6 +22,18 @@ dependencies.
 | `wesm/moneyflow` (Python) | Multi-backend personal-finance tool with a Monarch adapter; multi-backend projects notice and document provider changes quickly | adapter commits |
 | `modelcontextprotocol/go-sdk` (Go) | Our MCP protocol dependency. **Subscribe to its GitHub security advisories** — it shipped four HIGH advisories in 2026 (all ≤1.4.x, all patched; three were HTTP-transport-only, which our stdio-only server sidesteps). Re-review at each minor bump | releases + security advisories |
 
+## Dependency-scrutiny note
+
+The MCP SDK pulls `github.com/segmentio/encoding` (a faster JSON codec used
+to parse protocol frames + tool-call arguments), which in turn pins
+`github.com/segmentio/asm` v1.1.3 — a hand-written SIMD assembly library,
+dormant since late 2023, sitting in the JSON-decode hot path for
+model/attacker-influenced input. No CVE/advisory and it's a legitimate
+Twilio-Segment library, but it's the one higher-scrutiny transitive dep;
+it can't be bumped without a `replace` until segmentio/encoding updates its
+pin. Watch for a segmentio/encoding release that moves to asm v1.2.1+.
+Re-run `make check` (govulncheck) on every go-sdk bump.
+
 ## Ecosystem status notes (2026-08-09)
 
 - **hammem `main` is pinned to the dead `api.monarchmoney.com` host** — its

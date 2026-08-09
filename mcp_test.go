@@ -197,7 +197,10 @@ func (f *fakeAPI) ListMerchants(ctx context.Context, search string, limit int) (
 	if f.err != nil {
 		return nil, f.err
 	}
-	return []*monarch.Merchant{{ID: "m1", Name: "Netflix", TransactionCount: 12}}, nil
+	return []*monarch.Merchant{
+		{ID: "m1", Name: "Netflix", TransactionCount: 12},
+		{ID: "m2", Name: "Netflix Inc", TransactionCount: 3},
+	}, nil
 }
 
 func (f *fakeAPI) UpdateMerchant(ctx context.Context, id string, p monarch.MerchantUpdate) (*monarch.MerchantInfo, error) {
@@ -923,6 +926,26 @@ func TestMCPBulkUpdateTransactions(t *testing.T) {
 	}
 	if !res.IsError {
 		t.Error("bulk update with no fields must be a tool error")
+	}
+}
+
+func TestMCPMergeRejectsUnknownMerchant(t *testing.T) {
+	// The fake ListMerchants knows m1 and m2; a merge into an unknown
+	// target must fail BEFORE the destructive call.
+	api := &fakeAPI{}
+	cs := startMCP(t, api, true, nil)
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "merge_merchants",
+		Arguments: map[string]any{"duplicate_merchant_id": "m1", "target_merchant_id": "nope", "confirm": true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError || !strings.Contains(resultText(t, res), "not found") {
+		t.Errorf("unknown target must be rejected: %s", resultText(t, res))
+	}
+	if len(api.merges) != 0 {
+		t.Error("no merge may reach the API with an unknown target")
 	}
 }
 

@@ -1112,6 +1112,9 @@ func (h *toolHandlers) getCreditScore(ctx context.Context, _ *mcp.CallToolReques
 	for _, s := range snaps {
 		out.Snapshots = append(out.Snapshots, creditScorePointOut{Date: s.ReportedDate, Score: s.Score})
 	}
+	// Sort by reported date ascending — the server's order is unspecified,
+	// so never trust array position for "latest".
+	sort.Slice(out.Snapshots, func(i, j int) bool { return out.Snapshots[i].Date < out.Snapshots[j].Date })
 	if n := len(out.Snapshots); n > 0 {
 		out.Latest = out.Snapshots[n-1].Score
 	}
@@ -1213,6 +1216,24 @@ func (h *toolHandlers) mergeMerchants(ctx context.Context, _ *mcp.CallToolReques
 	if in.DuplicateMerchantID == "" || in.TargetMerchantID == "" {
 		return nil, zero, errors.New("duplicate_merchant_id and target_merchant_id are both required")
 	}
+	// Resolve both ids before the destructive delete: a typo'd-but-nonempty
+	// target would otherwise delete the duplicate while moving its
+	// transactions to a nonexistent merchant. Mirrors the pre-write
+	// validation in bulk_categorize.
+	merchants, err := h.api.ListMerchants(ctx, "", 5000)
+	if err != nil {
+		return nil, zero, err
+	}
+	known := make(map[string]bool, len(merchants))
+	for _, m := range merchants {
+		known[m.ID] = true
+	}
+	if !known[in.DuplicateMerchantID] {
+		return nil, zero, fmt.Errorf("duplicate_merchant_id %q not found (see get_merchants)", in.DuplicateMerchantID)
+	}
+	if !known[in.TargetMerchantID] {
+		return nil, zero, fmt.Errorf("target_merchant_id %q not found (see get_merchants)", in.TargetMerchantID)
+	}
 	if err := h.api.MergeMerchants(ctx, in.DuplicateMerchantID, in.TargetMerchantID); err != nil {
 		return nil, zero, err
 	}
@@ -1276,8 +1297,11 @@ func (h *toolHandlers) goalMove(ctx context.Context, in goalMoveIn, withdraw boo
 	if withdraw {
 		tool = "withdraw_from_goal"
 	}
+	// Log the event id (a non-sensitive confirmation handle), never the
+	// dollar amount — money values are financial PII, per the module's
+	// field-names-only audit-log policy.
 	h.logger.Info("write applied", "tool", tool,
-		"goal_id", in.GoalID, "account_id", in.AccountID, "amount", in.Amount)
+		"goal_id", in.GoalID, "account_id", in.AccountID, "event_id", res.EventID)
 	return nil, goalMoveOut{GoalID: res.GoalID, CurrentBalance: res.CurrentBalance, EventID: res.EventID}, nil
 }
 
