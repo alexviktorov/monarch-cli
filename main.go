@@ -27,6 +27,10 @@ DATA (all support --json)
   recurring      Recurring subscriptions & bills
   networth       Net worth history                  [--start --timeframe month|year]
 
+MCP
+  mcp            Serve an MCP server on stdio       [--allow-writes]
+                 (writes also need MONARCH_MCP_ALLOW_WRITES=1)
+
 ENVIRONMENT
   MONARCH_TOKEN         Use a bearer token directly (skips saved session)
   MONARCH_SESSION_FILE  Override session file path
@@ -69,6 +73,8 @@ func main() {
 		cmdRecurring(args)
 	case "networth":
 		cmdNetworth(args)
+	case "mcp":
+		cmdMCP(args)
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 	default:

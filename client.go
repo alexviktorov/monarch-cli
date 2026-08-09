@@ -66,15 +66,15 @@ func migrateLegacySession(store monarch.SessionStore, legacyPath string) {
 // newClient builds an authenticated client. Auth resolution order:
 //  1. MONARCH_TOKEN env var (direct bearer token)
 //  2. saved session (Keychain on macOS, session file elsewhere)
-func newClient() (*monarch.Client, error) {
+func newClient(extra ...monarch.Option) (*monarch.Client, error) {
 	if tok := os.Getenv("MONARCH_TOKEN"); tok != "" {
-		return monarch.New(monarch.WithToken(tok))
+		return monarch.New(append([]monarch.Option{monarch.WithToken(tok)}, extra...)...)
 	}
 	store, err := sessionStore()
 	if err != nil {
 		return nil, err
 	}
-	c, err := monarch.New(monarch.WithSessionStore(store))
+	c, err := monarch.New(append([]monarch.Option{monarch.WithSessionStore(store)}, extra...)...)
 	if err != nil {
 		return nil, err
 	}
