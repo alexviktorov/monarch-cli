@@ -6,3 +6,6 @@
 # never commit sessions/tokens
 session.json
 *.token
+
+# upstream-check.sh last-run timestamp
+.upstream-state

@@ -1,0 +1,51 @@
+# Upstream drift monitoring
+
+**Policy: we LEARN from upstream, we never import it.** When an upstream
+project fixes Monarch API breakage: read the diff or issue to understand what
+Monarch changed, verify against the live API yourself (app.monarch.com →
+devtools → Network tab), then re-implement in our own code from the observed
+behavior. Never vendor, copy, or transcribe upstream code — for licensing
+provenance, and because understanding the fix is the point.
+
+This repo deliberately has no third-party Monarch dependency (see the
+2026-08 decision record in CLAUDE.md and `.supply-chain-risk-auditor/results.md`).
+The projects below are eyes, not dependencies.
+
+## Watchlist
+
+| Repo | Why watch | What to watch |
+|---|---|---|
+| `hammem/monarchmoney` (Python) | Largest user base (~520★) — Monarch breakage lands in its **issue tracker** first (issue #156 was the api.monarch.com + `device-uuid` change). The owner is stalled, so watch issues/PRs, **not** commits; fixes appear in PR diffs and comments long before merge | issues/PRs: 403, 404, login, headers |
+| `eshaffer321/monarch-go` (Go) | The dependency this repo removed (2026-08). Closest code shapes to ours; its `internal/graphql/queries/` remains a useful operation catalog to *read* | commits touching auth/transport/queries |
+| `robcerda/monarch-mcp-server` (Python) | Highest-star Monarch MCP server — tool-design prior art and a second early-warning channel | issues |
+| `thedavidweng/monarchmoney-cli` (Go) | The other active Go Monarch CLI. If Monarch changes something, a second Go implementation's fix shows exactly which behavior moved; divergence between us and them is a signal one of us is wrong | commits |
+| `wesm/moneyflow` (Python) | Multi-backend personal-finance tool with a Monarch adapter; multi-backend projects notice and document provider changes quickly | adapter commits |
+| `modelcontextprotocol/go-sdk` (Go) | Our MCP protocol dependency. **Subscribe to its GitHub security advisories** — it shipped four HIGH advisories in 2026 (all ≤1.4.x, all patched; three were HTTP-transport-only, which our stdio-only server sidesteps). Re-review at each minor bump | releases + security advisories |
+
+## Signals that matter
+
+- Commits/issues touching: login, auth, headers, `device-uuid`,
+  `Client-Platform`, base URL (`api.monarch.com`), GraphQL operation names,
+  Cloudflare, MFA/OTP.
+- New required headers or renamed/removed GraphQL operations.
+
+## Cadence
+
+- **Monthly**: run `scripts/upstream-check.sh` (needs `gh`). Non-zero exit
+  means an auth-flagged commit was found.
+- **Immediately** on any unexplained 4xx from our own client — someone
+  upstream has usually already diagnosed it. Check the watchlist before
+  debugging blind.
+- Optional automation: a scheduled Claude Code routine can run the script
+  monthly and summarize *what Monarch changed* (API behavior only — it must
+  propose no code and import nothing; re-implementation is always a
+  deliberate manual step).
+
+## Change log
+
+Record every drift fix here: date — upstream ref (link) — what Monarch
+changed — our commit re-implementing it.
+
+| Date | Upstream ref | What Monarch changed | Our commit |
+|---|---|---|---|
+| — | — | — | — |
