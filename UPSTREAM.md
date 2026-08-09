@@ -22,6 +22,28 @@ The projects below are eyes, not dependencies.
 | `wesm/moneyflow` (Python) | Multi-backend personal-finance tool with a Monarch adapter; multi-backend projects notice and document provider changes quickly | adapter commits |
 | `modelcontextprotocol/go-sdk` (Go) | Our MCP protocol dependency. **Subscribe to its GitHub security advisories** — it shipped four HIGH advisories in 2026 (all ≤1.4.x, all patched; three were HTTP-transport-only, which our stdio-only server sidesteps). Re-review at each minor bump | releases + security advisories |
 
+## Ecosystem status notes (2026-08-09)
+
+- **hammem `main` is pinned to the dead `api.monarchmoney.com` host** — its
+  code is stale; its issue tracker remains the best breakage signal. For
+  *live auth behavior*, **robcerda/monarch-mcp-server's `monarch_auth.py` is
+  currently the ecosystem's best-maintained reference** (CAPTCHA handling,
+  token-shape validation, client-version headers, device-uuid persistence).
+- Balance-history CSV upload (`POST /account-balance-history/upload/`) is
+  NOT implemented here; note for whenever it is: hammem and monarch-go
+  disagree on the multipart form fields (`files`+`account_files_mapping`
+  vs `account_id`+`file`), and hammem's version has a request bug — verify
+  against devtools before trusting either.
+
+## Recapturing monarch-client-version
+
+Monarch validates `monarch-client` / `monarch-client-version` against a
+server-side minimum; a stale version can start returning 403s. The default
+lives in `pkg/monarch/transport.go` (`defaultClientVersion`). To recapture:
+open app.monarch.com → devtools → Network → any `graphql` request → copy the
+`monarch-client-version` request header value, bump the constant (or set
+`MONARCH_CLIENT_VERSION` as a stopgap), and log the change below.
+
 ## Signals that matter
 
 - Commits/issues touching: login, auth, headers, `device-uuid`,

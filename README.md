@@ -33,9 +33,10 @@ monarch login
 ```
 
 On macOS the session token is stored in your **login Keychain** (service
-`monarch-cli`), encrypted at rest; an existing `~/.config/monarch/session.json`
-from older versions is migrated in automatically. Elsewhere (or with
-`MONARCH_SESSION_FILE=/path`) it's a 0600 JSON file. Honest caveat: because
+`monarch-cli`), encrypted at rest; an existing session file from older
+versions (`~/Library/Application Support/monarch/session.json` on macOS —
+the `~/.config` path applies on Linux) is migrated in automatically.
+Elsewhere (or with `MONARCH_SESSION_FILE=/path`) it's a 0600 JSON file. Honest caveat: because
 the item is written via Apple's `security` tool, any process running *as you*
 can read it back the same way — Keychain protects the token at rest and while
 the keychain is locked, not against same-user malware.
@@ -57,27 +58,43 @@ Alternatives:
 Every data command accepts `--json` for raw output (pipe into `jq`).
 
 ```sh
+monarch overview                  # accounts + this month's cashflow + recent activity
 monarch accounts                  # balances by account + net worth line
 monarch transactions --start 2026-07-01 --end 2026-07-31 --limit 100
 monarch transactions --search "whole foods" --min 20
-monarch transactions --category <id> --account <id>   # IDs from `categories`/`accounts`
+monarch transactions --category <id> --account <id> --tag <id>
+monarch transactions --needs-review --has-notes --is-recurring
+monarch transactions --all --csv > transactions.csv
+monarch transactions --id <txID>  # full detail incl. splits
 monarch summary                   # lifetime totals
-monarch budget --month 2026-07    # budget vs. actual per category
+monarch budget --month 2026-07 [--csv]
 monarch cashflow --start 2026-01-01 --end 2026-06-30 --top 15
 monarch categories                # category IDs for filtering
 monarch recurring                 # subscriptions/bills + est. monthly total
 monarch networth --start 2025-08-01 --timeframe month
+monarch networth --daily          # per-day aggregate balance
+monarch holdings [--account id]   # investment positions
+monarch rules                     # auto-categorization rules
+monarch goals                     # savings goals
+monarch institutions              # connection health (stale-balance culprits)
 ```
 
 Sign convention follows Monarch: expenses are negative amounts, income
-positive. `--min`/`--max` bound the *absolute* amount.
+positive. `--min`/`--max` bound the *absolute* amount and apply per fetched
+page (combine with `--all` for whole-range filtering).
+
+`monarch whoami` performs a live server check, not just a local one.
+Optional env overrides: `MONARCH_DEVICE_UUID` (pin a token's device
+identity), `MONARCH_CLIENT_VERSION`, `MONARCH_USER_AGENT`.
 
 ## MCP server
 
-`monarch mcp` serves an MCP server on stdio with nine read tools
-(`get_accounts`, `get_transactions`, `get_transaction_summary`, `get_budget`,
-`get_cashflow`, `get_categories`, `get_tags`, `get_recurring`,
-`get_networth_history`).
+`monarch mcp` serves an MCP server on stdio with sixteen read tools:
+`get_accounts`, `get_transactions`, `get_transaction`,
+`get_transaction_summary`, `get_budget`, `get_cashflow`,
+`get_cashflow_summary`, `get_categories`, `get_tags`, `get_recurring`,
+`get_networth_history`, `get_holdings`, `get_rules`, `get_goals`,
+`get_institutions`, and `check_session`.
 
 Register with Claude Code (read-only — recommended default):
 
@@ -98,7 +115,10 @@ Claude Desktop (`~/Library/Application Support/Claude/claude_desktop_config.json
 
 ### Writes (off by default)
 
-One write tool exists — `update_transaction` (category, notes, tags). It is
+Three write tools exist — `update_transaction` (category, notes, amount,
+date, merchant, hide, mark-reviewed, tags), `create_tag`, and
+`bulk_categorize` (up to 100 transactions, **dry-run by default** — a
+preview is returned unless `dry_run=false` is passed explicitly). They are
 **not even registered** unless the server is started with *both* the
 `--allow-writes` flag and `MONARCH_MCP_ALLOW_WRITES=1`; a mismatch refuses to
 start. Register it as a separate server entry and only while you're actively

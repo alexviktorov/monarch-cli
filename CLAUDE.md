@@ -76,6 +76,22 @@ transport only — its 2026 HIGH advisories were all HTTP-transport bugs).
   client-side on absolute value (post-pagination — TransactionList.Fetched
   records the pre-filter page size); mutation payload `errors` can be an
   object OR an array (payloadErrors handles both).
+- Auth robustness (Tier-1 patch, 2026-08-09): token-only sessions derive a
+  STABLE device-uuid from the token (never random per run — Monarch ties
+  tokens to device identity); `error_code == "CAPTCHA_REQUIRED"` (and prose
+  `detail` fallbacks) map to ErrCaptchaRequired, never "invalid password";
+  every request sends `monarch-client`/`monarch-client-version` (recapture
+  procedure in UPSTREAM.md); JWT-shaped login tokens are rejected (that's
+  the 1-hour features token); `Client.Ping` (GetIdentity) backs the live
+  `whoami` check and the `check_session` MCP tool; redirects are refused.
+- Operation catalog beyond the original 8: `GetTransactionDetails` (drawer
+  incl. splits), `Web_GetHoldings`, `GetAggregateSnapshots` (daily),
+  `Web_GetCashFlowSummary`, `GetTransactionRules` (criteria kept as raw
+  JSON — shape unpinned), `Common_SavingsGoals`, `GetInstitutions`,
+  `GetIdentity`; mutations `Web_TransactionDrawerUpdateTransaction`
+  (extended field set), `Web_SetTransactionTags`,
+  `Common_CreateTransactionTag`. The `needsReview` filter key is
+  robcerda-derived — verify on first live use.
 - Sign convention: expenses negative, income positive. `monthlyEstimate` and
   the cashflow/recurring renderers rely on it.
 
@@ -107,9 +123,30 @@ transport only — its 2026 HIGH advisories were all HTTP-transport bugs).
   monarch-cli` shows the item after login, logout removes it; MCP read
   sequence + gated write test (update one transaction's notes, revert).
 
-## Backlog ideas (owner-approved directions, pick up on request)
+## Backlog (ranked remainder of the 2026-08 upstream comparison; pick up on request)
 
-- `holdings <accountID>` command; CSV export flag
-- Accept account/category *names* (resolve to IDs via list calls)
-- Month-over-month spending diff command for budget reviews
+Read-only:
+- Name→ID resolution for --account/--category (read-side only; the official
+  MCP deliberately refuses name matching on writes)
+- MCP elicitation-based login (Go SDK elicitation; removes the
+  "run `monarch login` in a terminal" dead end for GUI hosts)
+- wide-search fallback (opt-in bounded local scan when server `search`
+  misses notes/original-statement; robcerda tools/transactions.py)
+- Month-over-month diff / burn-rate analysis (local computation only)
+- Category groups (`ManageGetCategoryGroups`), subscription details
+  (`GetSubscriptionDetails`), account detail (`AccountDetails_getAccount`),
+  per-account balance history (`GetAccountHistory`), recent balances
+  (`GetAccountRecentBalances`), credit score (`GetCreditScoreSnapshots`)
 - Scheduled routine wrapping scripts/upstream-check.sh (summarize-only)
+
+Writes (each needs explicit owner approval; dry-run pattern first):
+- Budget set: `Common_UpdateBudgetItem` (NOT monarch-go's `setBudget` —
+  flagged possibly deprecated)
+- Splits: `Common_SplitTransactionMutation` (payload errors carry
+  `fieldErrors{field messages}` — richer than our payloadError)
+- Create/delete transaction; categories CRUD (`Web_DeleteCategory` has a
+  `moveToCategoryId` reassignment arg); rules CRUD (highest blast radius —
+  only after dry-run pattern is proven); account refresh
+  (`Common_ForceRefreshAccountsMutation` + poll — hits third-party
+  institutions, deserves its own gate); manual accounts CRUD; holdings
+  CRUD; balance-history CSV upload (see UPSTREAM.md endpoint discrepancy)
