@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -51,7 +53,9 @@ func cmdMCP(args []string) {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := server.Run(ctx, &mcp.StdioTransport{}); err != nil && ctx.Err() == nil {
+	err = server.Run(ctx, &mcp.StdioTransport{})
+	// The client closing stdin (EOF) is the normal way a stdio session ends.
+	if err != nil && ctx.Err() == nil && !errors.Is(err, io.EOF) {
 		fatal("mcp server: %v", err)
 	}
 }
