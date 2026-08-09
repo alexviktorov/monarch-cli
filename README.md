@@ -13,19 +13,11 @@ an actively maintained Go client that handles the current auth quirks
 
 ## Install
 
-Prebuilt binaries are included (`monarch-darwin-arm64` for Apple Silicon Macs).
-Or build from source (Go 1.21+):
+Build from source:
 
 ```sh
 go build -o monarch .
 ```
-
-Note: `go.mod` contains `replace` directives pointing `golang.org/x/*` at their
-GitHub mirrors (needed to build in a sandboxed environment). On a normal network
-you can delete those lines and run `go mod tidy` — the code is identical.
-
-On macOS, the first run of an unsigned downloaded binary may be blocked by
-Gatekeeper; clear it with `xattr -d com.apple.quarantine ./monarch-darwin-arm64`.
 
 ## Login
 

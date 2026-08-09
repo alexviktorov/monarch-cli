@@ -16,9 +16,3 @@ require (
 	github.com/pkg/errors v0.9.1 // indirect
 	golang.org/x/text v0.14.0
 )
-
-replace golang.org/x/term => github.com/golang/term v0.27.0
-
-replace golang.org/x/sys => github.com/golang/sys v0.28.0
-
-replace golang.org/x/text => github.com/golang/text v0.14.0

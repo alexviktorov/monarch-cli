@@ -8,7 +8,7 @@ web app uses). Built as a fallback for when the Monarch MCP server is down.
 ```sh
 go build -o monarch .     # build
 go vet ./...              # lint
-go test ./...             # tests (money formatter has coverage; add more)
+go test ./...             # tests
 ./monarch help            # usage
 ```
 
@@ -28,7 +28,9 @@ All Monarch API calls go through `github.com/eshaffer321/monarch-go/v2`
 - Base URL is `api.monarch.com` (NOT the old `api.monarchmoney.com`)
 - Login: `POST /auth/login/` needs `Client-Platform: web` AND a `device-uuid`
   header — without it Monarch 404s (hammem/monarchmoney#156)
-- MFA: 403/"MFA required" → retry with `totp` field; email OTP variant exists
+- MFA: detected via `error_code` in the JSON response body (`MFA_REQUIRED` /
+  `EMAIL_OTP_REQUIRED`), checked before HTTP status — NOT via 403. Retry the same
+  `POST /auth/login/` with a `totp` (or `email_otp`) field added
 - GraphQL documents live in the lib under `internal/graphql/queries/` — use as
   the catalog when adding commands
 
@@ -38,10 +40,6 @@ rather than rewrite it; revisit only if it goes stale.
 
 ## Gotchas
 
-- go.mod contains `replace golang.org/x/* => github.com/golang/*` lines. These
-  were needed to build in a network-sandboxed environment and are safe but
-  unnecessary on a normal network. Suggested first chore: delete the replace
-  block and `go mod tidy`.
 - Sign convention is Monarch's: expenses negative, income positive. The
   cashflow/recurring commands rely on this when filtering/aggregating.
 - `networth` classifies types {credit, loan, other_liability} as liabilities
