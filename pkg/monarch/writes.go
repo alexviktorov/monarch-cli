@@ -1185,3 +1185,133 @@ func (s *AccountsService) ForceRefresh(ctx context.Context, source string) (stri
 	}
 	return out.ForceRefreshAllAccounts.OpID, nil
 }
+
+// ---- savings-goal lifecycle ----
+
+// GoalCreate creates a savings goal. Name and Type are required (Type is
+// the goal "objective" string, e.g. "emergency_fund", "retirement",
+// "other" — the value drives Monarch's default icon/name).
+type GoalCreate struct {
+	Name                       string
+	Type                       string // required objective; defaults to "other"
+	TargetAmount               *float64
+	TargetDate                 *time.Time
+	PlannedMonthlyContribution *float64
+	Priority                   *int
+	IsSinkingFund              *bool
+}
+
+// These goal mutations return the entity and have NO payload errors field
+// (verified live 2026-08-09); failure surfaces as a top-level GraphQL
+// error. Only deleteSavingsGoal carries {success, errors}.
+const mutationCreateGoal = `mutation Common_CreateSavingsGoals($input: CreateSavingsGoalsInput!) {
+  createSavingsGoals(input: $input) {
+    savingsGoals { id name }
+  }
+}`
+
+// Create makes a savings goal and returns it. Requires WithWritesEnabled.
+func (s *GoalsService) Create(ctx context.Context, p GoalCreate) (*Goal, error) {
+	if err := s.c.requireWrites(); err != nil {
+		return nil, err
+	}
+	if p.Name == "" {
+		return nil, errors.New("monarch: CreateGoal: name required")
+	}
+	goalType := p.Type
+	if goalType == "" {
+		goalType = "other"
+	}
+	goal := map[string]any{"name": p.Name, "type": goalType}
+	if p.TargetAmount != nil {
+		goal["targetAmount"] = *p.TargetAmount
+	}
+	if p.TargetDate != nil {
+		goal["targetDate"] = p.TargetDate.Format("2006-01-02")
+	}
+	if p.PlannedMonthlyContribution != nil {
+		goal["plannedMonthlyContribution"] = *p.PlannedMonthlyContribution
+	}
+	if p.Priority != nil {
+		goal["priority"] = *p.Priority
+	}
+	if p.IsSinkingFund != nil {
+		goal["isSinkingFund"] = *p.IsSinkingFund
+	}
+	var out struct {
+		CreateSavingsGoals struct {
+			SavingsGoals []*Goal       `json:"savingsGoals"`
+			Errors       payloadErrors `json:"errors"`
+		} `json:"createSavingsGoals"`
+	}
+	// goals is [CreateSavingsGoalInput!]! — a list, even for a single goal.
+	err := s.c.doGraphQLNoRetry(ctx, "Common_CreateSavingsGoals", mutationCreateGoal,
+		map[string]any{"input": map[string]any{"goals": []map[string]any{goal}}}, &out)
+	if err != nil {
+		return nil, err
+	}
+	if len(out.CreateSavingsGoals.Errors) > 0 {
+		return nil, payloadErrs("CreateGoal", out.CreateSavingsGoals.Errors)
+	}
+	if len(out.CreateSavingsGoals.SavingsGoals) == 0 {
+		return nil, errors.New("monarch: CreateGoal: no goal in response")
+	}
+	return out.CreateSavingsGoals.SavingsGoals[0], nil
+}
+
+const mutationArchiveGoal = `mutation Common_ArchiveSavingsGoal($input: ArchiveSavingsGoalInput!) {
+  archiveSavingsGoal(input: $input) {
+    savingsGoal { id status }
+  }
+}`
+
+// Archive soft-removes a goal (moves it out of the active list). Requires
+// WithWritesEnabled.
+func (s *GoalsService) Archive(ctx context.Context, id string) error {
+	return s.goalByID(ctx, "Common_ArchiveSavingsGoal", mutationArchiveGoal, "archiveSavingsGoal", id, false)
+}
+
+const mutationDeleteGoal = `mutation Common_DeleteSavingsGoal($input: DeleteSavingsGoalInput!) {
+  deleteSavingsGoal(input: $input) {
+    success
+    errors { message code fieldErrors { field messages } }
+  }
+}`
+
+// Delete permanently removes a goal. Requires WithWritesEnabled.
+func (s *GoalsService) Delete(ctx context.Context, id string) error {
+	return s.goalByID(ctx, "Common_DeleteSavingsGoal", mutationDeleteGoal, "deleteSavingsGoal", id, true)
+}
+
+// (markGoalComplete/markGoalIncomplete are intentionally omitted: verified
+// live 2026-08-09 that they target Monarch's legacy Goal model and return
+// "not found" for savings-goal ids, so they don't apply to the current
+// savings-goal surface.)
+
+// goalByID runs a {id}-input goal mutation and checks failure. deleteLike
+// selects a `success` payload; the others select an entity, whose presence
+// (via non-empty errors) is the failure signal.
+func (s *GoalsService) goalByID(ctx context.Context, op, query, root, id string, deleteLike bool) error {
+	if err := s.c.requireWrites(); err != nil {
+		return err
+	}
+	if id == "" {
+		return errors.New("monarch: " + op + ": goal id required")
+	}
+	var out map[string]struct {
+		Success bool          `json:"success"`
+		Errors  payloadErrors `json:"errors"`
+	}
+	err := s.c.doGraphQLNoRetry(ctx, op, query, map[string]any{"input": map[string]any{"id": id}}, &out)
+	if err != nil {
+		return err
+	}
+	payload := out[root]
+	if len(payload.Errors) > 0 {
+		return payloadErrs(op, payload.Errors)
+	}
+	if deleteLike && !payload.Success {
+		return errors.New("monarch: " + op + ": goal was not deleted")
+	}
+	return nil
+}

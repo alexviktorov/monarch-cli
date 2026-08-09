@@ -41,6 +41,9 @@ type fakeAPI struct {
 	merges          [][2]string
 	goalMoves       [][3]string
 	refreshed       bool
+	goalCreates     []monarch.GoalCreate
+	goalArchives    []string
+	goalDeletes     []string
 }
 
 func (f *fakeAPI) ListAccounts(ctx context.Context) ([]*monarch.Account, error) {
@@ -306,6 +309,30 @@ func (f *fakeAPI) RefreshAccountsStatus(ctx context.Context, opID string) (*mona
 	return &monarch.RefreshOperation{ID: opID, State: "COMPLETED", Completed: 3, Total: 3}, nil
 }
 
+func (f *fakeAPI) CreateGoal(ctx context.Context, p monarch.GoalCreate) (*monarch.Goal, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	f.goalCreates = append(f.goalCreates, p)
+	return &monarch.Goal{ID: "new-goal", Name: p.Name}, nil
+}
+
+func (f *fakeAPI) ArchiveGoal(ctx context.Context, id string) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.goalArchives = append(f.goalArchives, id)
+	return nil
+}
+
+func (f *fakeAPI) DeleteGoal(ctx context.Context, id string) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.goalDeletes = append(f.goalDeletes, id)
+	return nil
+}
+
 func (f *fakeAPI) ContributeToGoal(ctx context.Context, goalID, accountID string, amount float64) (*monarch.GoalMoveResult, error) {
 	if f.err != nil {
 		return nil, f.err
@@ -427,10 +454,11 @@ var readToolNames = []string{
 var _ = 0 // inventory below includes contribute/withdraw goal writes
 
 var writeToolNames = []string{
-	"bulk_categorize", "bulk_update_transactions", "contribute_to_goal",
-	"create_category", "create_rule", "create_tag", "create_transaction",
-	"delete_category", "delete_rule", "delete_tag", "delete_transaction",
-	"merge_merchants", "refresh_accounts", "set_budget_amount",
+	"archive_goal", "bulk_categorize", "bulk_update_transactions",
+	"contribute_to_goal", "create_category", "create_goal", "create_rule",
+	"create_tag", "create_transaction",
+	"delete_category", "delete_goal", "delete_rule", "delete_tag",
+	"delete_transaction", "merge_merchants", "refresh_accounts", "set_budget_amount",
 	"set_transaction_splits", "update_category", "update_merchant",
 	"update_rule", "update_tag", "update_transaction", "withdraw_from_goal",
 }
@@ -1176,5 +1204,40 @@ func TestMCPRefreshAccounts(t *testing.T) {
 	json.Unmarshal(raw, &st)
 	if !st.Done || st.Total != 3 {
 		t.Errorf("status = %+v", st)
+	}
+}
+
+func TestMCPGoalLifecycle(t *testing.T) {
+	api := &fakeAPI{}
+	cs := startMCP(t, api, true, nil)
+	// create
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "create_goal", Arguments: map[string]any{"name": "Vacation", "type": "other", "target_amount": 5000.0},
+	})
+	if err != nil || res.IsError {
+		t.Fatalf("create: %v %s", err, resultText(t, res))
+	}
+	if len(api.goalCreates) != 1 || api.goalCreates[0].Name != "Vacation" || *api.goalCreates[0].TargetAmount != 5000 {
+		t.Errorf("goalCreates = %+v", api.goalCreates)
+	}
+	// archive & delete require confirm
+	for _, tool := range []string{"archive_goal", "delete_goal"} {
+		res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: tool, Arguments: map[string]any{"goal_id": "g1"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !res.IsError || !strings.Contains(resultText(t, res), "confirm") {
+			t.Errorf("%s without confirm must refuse", tool)
+		}
+	}
+	if len(api.goalArchives)+len(api.goalDeletes) != 0 {
+		t.Error("no archive/delete without confirm")
+	}
+	if _, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "delete_goal", Arguments: map[string]any{"goal_id": "g1", "confirm": true}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(api.goalDeletes) != 1 || api.goalDeletes[0] != "g1" {
+		t.Errorf("goalDeletes = %v", api.goalDeletes)
 	}
 }

@@ -57,6 +57,9 @@ type monarchAPI interface {
 	WithdrawFromGoal(ctx context.Context, goalID, accountID string, amount float64) (*monarch.GoalMoveResult, error)
 	ForceRefreshAccounts(ctx context.Context) (string, error)
 	RefreshAccountsStatus(ctx context.Context, opID string) (*monarch.RefreshOperation, error)
+	CreateGoal(ctx context.Context, p monarch.GoalCreate) (*monarch.Goal, error)
+	ArchiveGoal(ctx context.Context, id string) error
+	DeleteGoal(ctx context.Context, id string) error
 }
 
 type txQuery struct {
@@ -270,6 +273,18 @@ func (a *liveAPI) ForceRefreshAccounts(ctx context.Context) (string, error) {
 
 func (a *liveAPI) RefreshAccountsStatus(ctx context.Context, opID string) (*monarch.RefreshOperation, error) {
 	return a.c.Accounts.RefreshStatus(ctx, opID)
+}
+
+func (a *liveAPI) CreateGoal(ctx context.Context, p monarch.GoalCreate) (*monarch.Goal, error) {
+	return a.c.Goals.Create(ctx, p)
+}
+
+func (a *liveAPI) ArchiveGoal(ctx context.Context, id string) error {
+	return a.c.Goals.Archive(ctx, id)
+}
+
+func (a *liveAPI) DeleteGoal(ctx context.Context, id string) error {
+	return a.c.Goals.Delete(ctx, id)
 }
 
 func (a *liveAPI) GetSummary(ctx context.Context) (*monarch.TransactionSummary, error) {
@@ -1472,6 +1487,89 @@ func (h *toolHandlers) refreshAccounts(ctx context.Context, _ *mcp.CallToolReque
 	}, nil
 }
 
+// ---- goal lifecycle (write) ----
+
+type createGoalIn struct {
+	Name                       string   `json:"name" jsonschema:"goal name"`
+	Type                       string   `json:"type,omitempty" jsonschema:"objective, e.g. emergency_fund, retirement, other (default other)"`
+	TargetAmount               *float64 `json:"target_amount,omitempty"`
+	TargetDate                 *string  `json:"target_date,omitempty" jsonschema:"YYYY-MM-DD"`
+	PlannedMonthlyContribution *float64 `json:"planned_monthly_contribution,omitempty"`
+}
+
+type createGoalOut struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+func (h *toolHandlers) createGoal(ctx context.Context, _ *mcp.CallToolRequest, in createGoalIn) (*mcp.CallToolResult, createGoalOut, error) {
+	var zero createGoalOut
+	if err := h.requireWriteMode(); err != nil {
+		return nil, zero, err
+	}
+	if in.Name == "" {
+		return nil, zero, errors.New("name is required")
+	}
+	p := monarch.GoalCreate{
+		Name: in.Name, Type: in.Type,
+		TargetAmount: in.TargetAmount, PlannedMonthlyContribution: in.PlannedMonthlyContribution,
+	}
+	if in.TargetDate != nil {
+		d, err := parseToolDate(*in.TargetDate, "target_date")
+		if err != nil {
+			return nil, zero, err
+		}
+		p.TargetDate = &d
+	}
+	g, err := h.api.CreateGoal(ctx, p)
+	if err != nil {
+		return nil, zero, err
+	}
+	h.logger.Info("write applied", "tool", "create_goal", "goal_id", g.ID)
+	return nil, createGoalOut{ID: g.ID, Name: g.Name}, nil
+}
+
+type goalIDConfirmIn struct {
+	GoalID  string `json:"goal_id" jsonschema:"id from get_goals"`
+	Confirm bool   `json:"confirm" jsonschema:"must be true"`
+}
+
+func (h *toolHandlers) archiveGoal(ctx context.Context, _ *mcp.CallToolRequest, in goalIDConfirmIn) (*mcp.CallToolResult, deletedOut, error) {
+	var zero deletedOut
+	if err := h.requireWriteMode(); err != nil {
+		return nil, zero, err
+	}
+	if !in.Confirm {
+		return nil, zero, errors.New("refusing to archive without confirm:true")
+	}
+	if in.GoalID == "" {
+		return nil, zero, errors.New("goal_id is required")
+	}
+	if err := h.api.ArchiveGoal(ctx, in.GoalID); err != nil {
+		return nil, zero, err
+	}
+	h.logger.Info("write applied", "tool", "archive_goal", "goal_id", in.GoalID)
+	return nil, deletedOut{Deleted: true}, nil
+}
+
+func (h *toolHandlers) deleteGoal(ctx context.Context, _ *mcp.CallToolRequest, in goalIDConfirmIn) (*mcp.CallToolResult, deletedOut, error) {
+	var zero deletedOut
+	if err := h.requireWriteMode(); err != nil {
+		return nil, zero, err
+	}
+	if !in.Confirm {
+		return nil, zero, errors.New("refusing to delete without confirm:true — goal deletion is permanent")
+	}
+	if in.GoalID == "" {
+		return nil, zero, errors.New("goal_id is required")
+	}
+	if err := h.api.DeleteGoal(ctx, in.GoalID); err != nil {
+		return nil, zero, err
+	}
+	h.logger.Info("write applied", "tool", "delete_goal", "goal_id", in.GoalID)
+	return nil, deletedOut{Deleted: true}, nil
+}
+
 // ---- update_transaction (write; registered only when gated on) ----
 
 type updateTransactionIn struct {
@@ -2406,6 +2504,21 @@ func buildMCPServer(api monarchAPI, auth authController, writes bool, logger *sl
 			Description: "Ask Monarch to re-sync ALL accounts from their institutions (a remote action — it contacts your banks via the aggregator). Returns an operation_id; poll refresh_status or re-read get_accounts shortly.",
 			Annotations: &mcp.ToolAnnotations{DestructiveHint: ptr(false), IdempotentHint: false, OpenWorldHint: ptr(true)},
 		}, wrap(limits, h.refreshAccounts))
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "create_goal",
+			Description: "Create a savings goal (name + objective type; optional target amount/date and planned monthly contribution). Returns its id.",
+			Annotations: &mcp.ToolAnnotations{DestructiveHint: ptr(false), IdempotentHint: false, OpenWorldHint: ptr(false)},
+		}, wrap(limits, h.createGoal))
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "archive_goal",
+			Description: "Archive a savings goal (removes it from the active list). Requires confirm:true.",
+			Annotations: &mcp.ToolAnnotations{DestructiveHint: ptr(true), IdempotentHint: true, OpenWorldHint: ptr(false)},
+		}, wrap(limits, h.archiveGoal))
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "delete_goal",
+			Description: "PERMANENTLY delete a savings goal. Requires confirm:true.",
+			Annotations: &mcp.ToolAnnotations{DestructiveHint: ptr(true), IdempotentHint: true, OpenWorldHint: ptr(false)},
+		}, wrap(limits, h.deleteGoal))
 	}
 	return server
 }
