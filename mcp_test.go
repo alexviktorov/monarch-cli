@@ -35,6 +35,10 @@ type fakeAPI struct {
 	ruleUpdates     []monarch.RuleInput
 	ruleDeletes     []string
 	rulesSeq        [][]*monarch.Rule // successive ListRules responses
+	txDeletes       []string
+	tagUpdates      []string
+	tagDeletes      []string
+	merges          [][2]string
 }
 
 func (f *fakeAPI) ListAccounts(ctx context.Context) ([]*monarch.Account, error) {
@@ -243,6 +247,45 @@ func (f *fakeAPI) UpdateRule(ctx context.Context, id string, r monarch.RuleInput
 	return nil
 }
 
+func (f *fakeAPI) DeleteTransaction(ctx context.Context, id string) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.txDeletes = append(f.txDeletes, id)
+	return nil
+}
+
+func (f *fakeAPI) UpdateTag(ctx context.Context, id string, p monarch.TagUpdate) (*monarch.Tag, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	f.tagUpdates = append(f.tagUpdates, id)
+	return &monarch.Tag{ID: id, Name: "renamed"}, nil
+}
+
+func (f *fakeAPI) DeleteTag(ctx context.Context, id string) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.tagDeletes = append(f.tagDeletes, id)
+	return nil
+}
+
+func (f *fakeAPI) MergeMerchants(ctx context.Context, dup, target string) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.merges = append(f.merges, [2]string{dup, target})
+	return nil
+}
+
+func (f *fakeAPI) GetCreditScoreHistory(ctx context.Context) ([]*monarch.CreditScoreSnapshot, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return []*monarch.CreditScoreSnapshot{{ReportedDate: "2026-08-01", Score: 780}}, nil
+}
+
 func (f *fakeAPI) DeleteRule(ctx context.Context, id string) error {
 	if f.err != nil {
 		return f.err
@@ -301,15 +344,16 @@ var readToolNames = []string{
 	"check_session", "get_accounts", "get_budget", "get_cashflow",
 	"get_cashflow_summary", "get_categories", "get_goals", "get_holdings",
 	"get_institutions", "get_merchants", "get_networth_history", "get_recurring",
-	"get_rules", "get_tags", "get_transaction", "get_transaction_summary",
-	"get_transactions",
+	"get_credit_score", "get_rules", "get_tags", "get_transaction",
+	"get_transaction_summary", "get_transactions",
 }
 
 var writeToolNames = []string{
 	"bulk_categorize", "create_category", "create_rule", "create_tag",
-	"create_transaction", "delete_category", "delete_rule",
-	"set_budget_amount", "set_transaction_splits", "update_category",
-	"update_merchant", "update_rule", "update_transaction",
+	"create_transaction", "delete_category", "delete_rule", "delete_tag",
+	"delete_transaction", "merge_merchants", "set_budget_amount",
+	"set_transaction_splits", "update_category", "update_merchant",
+	"update_rule", "update_tag", "update_transaction",
 }
 
 func TestMCPToolInventoryReadOnly(t *testing.T) {
@@ -781,5 +825,68 @@ func TestMCPUpdateTransactionRequiresChange(t *testing.T) {
 	}
 	if len(api.updates) != 0 || len(api.tagSets) != 0 {
 		t.Error("no write must reach the API")
+	}
+}
+
+func TestMCPNewWriteConfirmGates(t *testing.T) {
+	api := &fakeAPI{}
+	cs := startMCP(t, api, true, nil)
+	for tool, args := range map[string]map[string]any{
+		"delete_transaction": {"transaction_id": "t1"},
+		"delete_tag":         {"tag_id": "g1"},
+		"merge_merchants":    {"duplicate_merchant_id": "m1", "target_merchant_id": "m2"},
+	} {
+		res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: tool, Arguments: args})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !res.IsError || !strings.Contains(resultText(t, res), "confirm") {
+			t.Errorf("%s without confirm must refuse: %s", tool, resultText(t, res))
+		}
+	}
+	if len(api.txDeletes)+len(api.tagDeletes)+len(api.merges) != 0 {
+		t.Error("no destructive op may reach the API without confirm")
+	}
+	// Confirmed merge reaches the API with the right ids.
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "merge_merchants",
+		Arguments: map[string]any{"duplicate_merchant_id": "m1", "target_merchant_id": "m2", "confirm": true},
+	})
+	if err != nil || res.IsError {
+		t.Fatalf("confirmed merge failed: %v %s", err, resultText(t, res))
+	}
+	if len(api.merges) != 1 || api.merges[0] != [2]string{"m1", "m2"} {
+		t.Errorf("merges = %v", api.merges)
+	}
+}
+
+func TestMCPGetCreditScore(t *testing.T) {
+	cs := startMCP(t, &fakeAPI{}, false, nil)
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: "get_credit_score", Arguments: map[string]any{}})
+	if err != nil || res.IsError {
+		t.Fatalf("%v %s", err, resultText(t, res))
+	}
+	raw, _ := json.Marshal(res.StructuredContent)
+	var out getCreditScoreOut
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Latest != 780 || len(out.Snapshots) != 1 {
+		t.Errorf("out = %+v", out)
+	}
+}
+
+func TestMCPUpdateTag(t *testing.T) {
+	api := &fakeAPI{}
+	cs := startMCP(t, api, true, nil)
+	name := "renamed"
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "update_tag", Arguments: map[string]any{"tag_id": "g1", "name": name},
+	})
+	if err != nil || res.IsError {
+		t.Fatalf("%v %s", err, resultText(t, res))
+	}
+	if len(api.tagUpdates) != 1 || api.tagUpdates[0] != "g1" {
+		t.Errorf("tagUpdates = %v", api.tagUpdates)
 	}
 }

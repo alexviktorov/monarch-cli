@@ -89,12 +89,12 @@ identity), `MONARCH_CLIENT_VERSION`, `MONARCH_USER_AGENT`.
 
 ## MCP server
 
-`monarch mcp` serves an MCP server on stdio with sixteen read tools:
+`monarch mcp` serves an MCP server on stdio with eighteen read tools:
 `get_accounts`, `get_transactions`, `get_transaction`,
 `get_transaction_summary`, `get_budget`, `get_cashflow`,
-`get_cashflow_summary`, `get_categories`, `get_tags`, `get_recurring`,
-`get_networth_history`, `get_holdings`, `get_rules`, `get_goals`,
-`get_institutions`, and `check_session`.
+`get_cashflow_summary`, `get_categories`, `get_tags`, `get_merchants`,
+`get_recurring`, `get_networth_history`, `get_holdings`, `get_rules`,
+`get_goals`, `get_institutions`, `get_credit_score`, and `check_session`.
 
 Register with Claude Code (read-only — recommended default):
 
@@ -115,18 +115,19 @@ Claude Desktop (`~/Library/Application Support/Claude/claude_desktop_config.json
 
 ### Writes (off by default)
 
-Thirteen write tools exist: `update_transaction` (category, notes, amount,
-date, merchant, hide, mark-reviewed, tags), `create_tag`, `bulk_categorize`
-(up to 25 per call, **dry-run by default**), `set_transaction_splits`
-(sum-validated; empty list clears), `create_transaction` (manual accounts),
-`set_budget_amount` (0 clears), `update_merchant` (rename + recurring-stream
-config), `create_category` / `update_category` / `delete_category`
-(**confirm:true required**; supports transaction reassignment), and
-`create_rule` / `update_rule` / `delete_rule` (**confirm:true on delete**;
-back-applying to history requires explicit `apply_to_existing=true`). None
-are registered unless the server is started with *both* the
-`--allow-writes` flag and `MONARCH_MCP_ALLOW_WRITES=1`; a mismatch refuses
-to start. Register it as a separate server entry and only while you're actively
+Seventeen write tools exist: `update_transaction` (category, notes, amount,
+date, merchant, hide, mark-reviewed, tags), `create_transaction` (manual
+accounts), `delete_transaction` (**confirm**), `bulk_categorize` (up to 25
+per call, **dry-run by default**), `set_transaction_splits` (sum-validated;
+empty list clears), `set_budget_amount` (0 clears), `create_tag` /
+`update_tag` / `delete_tag` (**confirm**), `update_merchant` (rename +
+recurring-stream config), `merge_merchants` (**confirm**; folds a duplicate
+into a target), `create_category` / `update_category` / `delete_category`
+(**confirm**; supports transaction reassignment), and `create_rule` /
+`update_rule` / `delete_rule` (**confirm on delete**; back-applying to
+history requires explicit `apply_to_existing=true`). None are registered
+unless the server is started with *both* the `--allow-writes` flag and
+`MONARCH_MCP_ALLOW_WRITES=1`; a mismatch refuses to start. Register it as a separate server entry and only while you're actively
 doing a cleanup session:
 
 ```sh

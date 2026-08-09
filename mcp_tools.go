@@ -48,6 +48,11 @@ type monarchAPI interface {
 	CreateRule(ctx context.Context, r monarch.RuleInput) error
 	UpdateRule(ctx context.Context, id string, r monarch.RuleInput) error
 	DeleteRule(ctx context.Context, id string) error
+	DeleteTransaction(ctx context.Context, id string) error
+	UpdateTag(ctx context.Context, id string, p monarch.TagUpdate) (*monarch.Tag, error)
+	DeleteTag(ctx context.Context, id string) error
+	MergeMerchants(ctx context.Context, duplicateID, targetID string) error
+	GetCreditScoreHistory(ctx context.Context) ([]*monarch.CreditScoreSnapshot, error)
 }
 
 type txQuery struct {
@@ -195,6 +200,26 @@ func (a *liveAPI) UpdateRule(ctx context.Context, id string, r monarch.RuleInput
 
 func (a *liveAPI) DeleteRule(ctx context.Context, id string) error {
 	return a.c.Rules.Delete(ctx, id)
+}
+
+func (a *liveAPI) DeleteTransaction(ctx context.Context, id string) error {
+	return a.c.Transactions.Delete(ctx, id)
+}
+
+func (a *liveAPI) UpdateTag(ctx context.Context, id string, p monarch.TagUpdate) (*monarch.Tag, error) {
+	return a.c.Tags.Update(ctx, id, p)
+}
+
+func (a *liveAPI) DeleteTag(ctx context.Context, id string) error {
+	return a.c.Tags.Delete(ctx, id)
+}
+
+func (a *liveAPI) MergeMerchants(ctx context.Context, duplicateID, targetID string) error {
+	return a.c.Merchants.Merge(ctx, duplicateID, targetID)
+}
+
+func (a *liveAPI) GetCreditScoreHistory(ctx context.Context) ([]*monarch.CreditScoreSnapshot, error) {
+	return a.c.GetCreditScoreHistory(ctx)
 }
 
 func (a *liveAPI) GetSummary(ctx context.Context) (*monarch.TransactionSummary, error) {
@@ -1056,6 +1081,136 @@ func (h *toolHandlers) getMerchants(ctx context.Context, _ *mcp.CallToolRequest,
 	return nil, out, nil
 }
 
+// ---- get_credit_score ----
+
+type creditScorePointOut struct {
+	Date  string `json:"date"`
+	Score int    `json:"score"`
+}
+
+type getCreditScoreOut struct {
+	Snapshots []creditScorePointOut `json:"snapshots"`
+	Latest    int                   `json:"latest,omitempty"`
+}
+
+func (h *toolHandlers) getCreditScore(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, getCreditScoreOut, error) {
+	snaps, err := h.api.GetCreditScoreHistory(ctx)
+	if err != nil {
+		return nil, getCreditScoreOut{}, err
+	}
+	out := getCreditScoreOut{Snapshots: []creditScorePointOut{}}
+	for _, s := range snaps {
+		out.Snapshots = append(out.Snapshots, creditScorePointOut{Date: s.ReportedDate, Score: s.Score})
+	}
+	if n := len(out.Snapshots); n > 0 {
+		out.Latest = out.Snapshots[n-1].Score
+	}
+	return nil, out, nil
+}
+
+// ---- delete_transaction (write) ----
+
+type deleteTransactionIn struct {
+	TransactionID string `json:"transaction_id" jsonschema:"id from get_transactions"`
+	Confirm       bool   `json:"confirm" jsonschema:"must be true — deletion is PERMANENT, there is no undo via the API"`
+}
+
+func (h *toolHandlers) deleteTransaction(ctx context.Context, _ *mcp.CallToolRequest, in deleteTransactionIn) (*mcp.CallToolResult, deletedOut, error) {
+	var zero deletedOut
+	if err := h.requireWriteMode(); err != nil {
+		return nil, zero, err
+	}
+	if !in.Confirm {
+		return nil, zero, errors.New("refusing to delete without confirm:true — transaction deletion is permanent and cannot be undone")
+	}
+	if in.TransactionID == "" {
+		return nil, zero, errors.New("transaction_id is required")
+	}
+	if err := h.api.DeleteTransaction(ctx, in.TransactionID); err != nil {
+		return nil, zero, err
+	}
+	h.logger.Info("write applied", "tool", "delete_transaction", "transaction_id", in.TransactionID)
+	return nil, deletedOut{Deleted: true}, nil
+}
+
+// ---- update_tag / delete_tag (write) ----
+
+type updateTagIn struct {
+	TagID string  `json:"tag_id" jsonschema:"id from get_tags"`
+	Name  *string `json:"name,omitempty" jsonschema:"omit to leave unchanged"`
+	Color *string `json:"color,omitempty" jsonschema:"hex color like #e11d21; omit to leave unchanged"`
+}
+
+func (h *toolHandlers) updateTag(ctx context.Context, _ *mcp.CallToolRequest, in updateTagIn) (*mcp.CallToolResult, createTagOut, error) {
+	var zero createTagOut
+	if err := h.requireWriteMode(); err != nil {
+		return nil, zero, err
+	}
+	if in.TagID == "" {
+		return nil, zero, errors.New("tag_id is required")
+	}
+	tag, err := h.api.UpdateTag(ctx, in.TagID, monarch.TagUpdate{Name: in.Name, Color: in.Color})
+	if err != nil {
+		return nil, zero, err
+	}
+	h.logger.Info("write applied", "tool", "update_tag", "tag_id", in.TagID)
+	out := createTagOut{ID: in.TagID}
+	if tag != nil {
+		out.ID, out.Name = tag.ID, tag.Name
+	}
+	return nil, out, nil
+}
+
+type deleteTagIn struct {
+	TagID   string `json:"tag_id" jsonschema:"id from get_tags"`
+	Confirm bool   `json:"confirm" jsonschema:"must be true — removes the tag from all transactions carrying it"`
+}
+
+func (h *toolHandlers) deleteTag(ctx context.Context, _ *mcp.CallToolRequest, in deleteTagIn) (*mcp.CallToolResult, deletedOut, error) {
+	var zero deletedOut
+	if err := h.requireWriteMode(); err != nil {
+		return nil, zero, err
+	}
+	if !in.Confirm {
+		return nil, zero, errors.New("refusing to delete without confirm:true — the tag is removed from every transaction that has it")
+	}
+	if in.TagID == "" {
+		return nil, zero, errors.New("tag_id is required")
+	}
+	if err := h.api.DeleteTag(ctx, in.TagID); err != nil {
+		return nil, zero, err
+	}
+	h.logger.Info("write applied", "tool", "delete_tag", "tag_id", in.TagID)
+	return nil, deletedOut{Deleted: true}, nil
+}
+
+// ---- merge_merchants (write) ----
+
+type mergeMerchantsIn struct {
+	DuplicateMerchantID string `json:"duplicate_merchant_id" jsonschema:"the merchant to REMOVE (its transactions and rules move to the target)"`
+	TargetMerchantID    string `json:"target_merchant_id" jsonschema:"the merchant to KEEP"`
+	Confirm             bool   `json:"confirm" jsonschema:"must be true — the duplicate merchant is permanently removed"`
+}
+
+func (h *toolHandlers) mergeMerchants(ctx context.Context, _ *mcp.CallToolRequest, in mergeMerchantsIn) (*mcp.CallToolResult, deletedOut, error) {
+	var zero deletedOut
+	if err := h.requireWriteMode(); err != nil {
+		return nil, zero, err
+	}
+	if !in.Confirm {
+		return nil, zero, errors.New("refusing to merge without confirm:true — the duplicate merchant is permanently removed")
+	}
+	if in.DuplicateMerchantID == "" || in.TargetMerchantID == "" {
+		return nil, zero, errors.New("duplicate_merchant_id and target_merchant_id are both required")
+	}
+	if err := h.api.MergeMerchants(ctx, in.DuplicateMerchantID, in.TargetMerchantID); err != nil {
+		return nil, zero, err
+	}
+	h.logger.Info("write applied", "tool", "merge_merchants",
+		"duplicate_merchant_id", in.DuplicateMerchantID, "target_merchant_id", in.TargetMerchantID)
+	return nil, deletedOut{Deleted: true}, nil
+}
+
 // ---- update_transaction (write; registered only when gated on) ----
 
 type updateTransactionIn struct {
@@ -1789,6 +1944,11 @@ func buildMCPServer(api monarchAPI, writes bool, logger *slog.Logger, limits *to
 		Annotations: roAnnotations(),
 	}, wrap(limits, h.getMerchants))
 	mcp.AddTool(server, &mcp.Tool{
+		Name:        "get_credit_score",
+		Description: "Credit score history (reported date + score) with the latest value.",
+		Annotations: roAnnotations(),
+	}, wrap(limits, h.getCreditScore))
+	mcp.AddTool(server, &mcp.Tool{
 		Name:        "get_institutions",
 		Description: "Institution connection health — update_required=true explains stale account balances.",
 		Annotations: roAnnotations(),
@@ -1860,6 +2020,26 @@ func buildMCPServer(api monarchAPI, writes bool, logger *slog.Logger, limits *to
 			Description: "PERMANENTLY delete an auto-categorization rule. Requires confirm:true.",
 			Annotations: &mcp.ToolAnnotations{DestructiveHint: ptr(true), IdempotentHint: true, OpenWorldHint: ptr(false)},
 		}, wrap(limits, h.deleteRule))
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "delete_transaction",
+			Description: "PERMANENTLY delete a transaction. Requires confirm:true. There is no undo via the API.",
+			Annotations: &mcp.ToolAnnotations{DestructiveHint: ptr(true), IdempotentHint: true, OpenWorldHint: ptr(false)},
+		}, wrap(limits, h.deleteTransaction))
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "update_tag",
+			Description: "Rename or recolor a tag.",
+			Annotations: &mcp.ToolAnnotations{DestructiveHint: ptr(true), IdempotentHint: true, OpenWorldHint: ptr(false)},
+		}, wrap(limits, h.updateTag))
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "delete_tag",
+			Description: "PERMANENTLY delete a tag (removes it from every transaction that has it). Requires confirm:true.",
+			Annotations: &mcp.ToolAnnotations{DestructiveHint: ptr(true), IdempotentHint: true, OpenWorldHint: ptr(false)},
+		}, wrap(limits, h.deleteTag))
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "merge_merchants",
+			Description: "Merge a duplicate merchant into a target: the duplicate's transactions and rules move to the target and the duplicate is removed. Use get_merchants to find the ids. Requires confirm:true.",
+			Annotations: &mcp.ToolAnnotations{DestructiveHint: ptr(true), IdempotentHint: false, OpenWorldHint: ptr(false)},
+		}, wrap(limits, h.mergeMerchants))
 	}
 	return server
 }

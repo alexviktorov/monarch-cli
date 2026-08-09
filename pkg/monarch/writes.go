@@ -896,3 +896,169 @@ func (s *RulesService) Delete(ctx context.Context, id string) error {
 	}
 	return nil
 }
+
+// ---- delete transaction ----
+
+const mutationDeleteTransaction = `mutation Common_DeleteTransactionMutation($input: DeleteTransactionMutationInput!) {
+  deleteTransaction(input: $input) {
+    deleted
+    errors { message code fieldErrors { field messages } }
+  }
+}`
+
+// Delete PERMANENTLY removes a transaction — there is no undo via the
+// API. Following the rule-delete lesson, a null/absent deleted flag is
+// treated as success; only an errors payload or an explicit false fails.
+// Requires WithWritesEnabled.
+func (s *TransactionsService) Delete(ctx context.Context, id string) error {
+	if err := s.c.requireWrites(); err != nil {
+		return err
+	}
+	if id == "" {
+		return errors.New("monarch: DeleteTransaction: transaction id required")
+	}
+	input := map[string]any{"transactionId": id}
+	var out struct {
+		DeleteTransaction struct {
+			Deleted *bool         `json:"deleted"`
+			Errors  payloadErrors `json:"errors"`
+		} `json:"deleteTransaction"`
+	}
+	err := s.c.doGraphQLNoRetry(ctx, "Common_DeleteTransactionMutation", mutationDeleteTransaction,
+		map[string]any{"input": input}, &out)
+	if err != nil {
+		return err
+	}
+	if len(out.DeleteTransaction.Errors) > 0 {
+		return payloadErrs("DeleteTransaction", out.DeleteTransaction.Errors)
+	}
+	if out.DeleteTransaction.Deleted != nil && !*out.DeleteTransaction.Deleted {
+		return errors.New("monarch: DeleteTransaction: transaction was not deleted")
+	}
+	return nil
+}
+
+// ---- tag update/delete ----
+
+// Shapes probed live 2026-08-09 against a disposable tag (no OSS
+// reference carries them).
+const mutationUpdateTag = `mutation Common_UpdateTransactionTag($input: UpdateTransactionTagInput!) {
+  updateTransactionTag(input: $input) {
+    tag { id name }
+    errors { message code fieldErrors { field messages } }
+  }
+}`
+
+// Confirmed against the live web-app schema 2026-08-09: the arg is
+// `tagId` (not `id`) and the payload is errors-only (no `deleted`).
+const mutationDeleteTag = `mutation Common_DeleteHouseholdTransactionTag($tagId: ID!) {
+  deleteTransactionTag(tagId: $tagId) {
+    errors { message code fieldErrors { field messages } }
+  }
+}`
+
+type TagUpdate struct {
+	Name  *string
+	Color *string
+}
+
+// Update renames/recolors a tag. Requires WithWritesEnabled.
+func (s *TagsService) Update(ctx context.Context, id string, p TagUpdate) (*Tag, error) {
+	if err := s.c.requireWrites(); err != nil {
+		return nil, err
+	}
+	if id == "" {
+		return nil, errors.New("monarch: UpdateTag: tag id required")
+	}
+	if p.Name == nil && p.Color == nil {
+		return nil, errors.New("monarch: UpdateTag: nothing to change")
+	}
+	input := map[string]any{"id": id}
+	if p.Name != nil {
+		input["name"] = *p.Name
+	}
+	if p.Color != nil {
+		input["color"] = *p.Color
+	}
+	var out struct {
+		UpdateTransactionTag struct {
+			Tag    *Tag          `json:"tag"`
+			Errors payloadErrors `json:"errors"`
+		} `json:"updateTransactionTag"`
+	}
+	err := s.c.doGraphQLNoRetry(ctx, "Common_UpdateTransactionTag", mutationUpdateTag,
+		map[string]any{"input": input}, &out)
+	if err != nil {
+		return nil, err
+	}
+	if len(out.UpdateTransactionTag.Errors) > 0 {
+		return nil, payloadErrs("UpdateTransactionTag", out.UpdateTransactionTag.Errors)
+	}
+	return out.UpdateTransactionTag.Tag, nil
+}
+
+// Delete removes a tag (it is removed from all transactions carrying it).
+// Tolerant deleted-flag handling, as with rules. Requires
+// WithWritesEnabled.
+func (s *TagsService) Delete(ctx context.Context, id string) error {
+	if err := s.c.requireWrites(); err != nil {
+		return err
+	}
+	if id == "" {
+		return errors.New("monarch: DeleteTag: tag id required")
+	}
+	var out struct {
+		DeleteTransactionTag struct {
+			Errors payloadErrors `json:"errors"`
+		} `json:"deleteTransactionTag"`
+	}
+	err := s.c.doGraphQLNoRetry(ctx, "Common_DeleteHouseholdTransactionTag", mutationDeleteTag,
+		map[string]any{"tagId": id}, &out)
+	if err != nil {
+		return err
+	}
+	if len(out.DeleteTransactionTag.Errors) > 0 {
+		return payloadErrs("DeleteTransactionTag", out.DeleteTransactionTag.Errors)
+	}
+	return nil
+}
+
+// ---- merchant merge ----
+
+// Monarch has no dedicated merge mutation: merging is deleting the
+// duplicate merchant and moving its transactions/rules to the target.
+// Confirmed against the live web-app schema 2026-08-09.
+const mutationMergeMerchants = `mutation Common_DeleteMerchant($id: ID!, $moveRelationsToMerchantId: ID) {
+  deleteMerchant(id: $id, moveRelationsToMerchantId: $moveRelationsToMerchantId) {
+    success
+  }
+}`
+
+// Merge folds the duplicate merchant into target: the duplicate is
+// deleted and all its transactions and rules move to target. Requires
+// WithWritesEnabled.
+func (s *MerchantsService) Merge(ctx context.Context, duplicateID, targetID string) error {
+	if err := s.c.requireWrites(); err != nil {
+		return err
+	}
+	if duplicateID == "" || targetID == "" {
+		return errors.New("monarch: Merge: duplicate and target merchant ids required")
+	}
+	if duplicateID == targetID {
+		return errors.New("monarch: Merge: duplicate and target must differ")
+	}
+	var out struct {
+		DeleteMerchant struct {
+			Success bool `json:"success"`
+		} `json:"deleteMerchant"`
+	}
+	vars := map[string]any{"id": duplicateID, "moveRelationsToMerchantId": targetID}
+	err := s.c.doGraphQLNoRetry(ctx, "Common_DeleteMerchant", mutationMergeMerchants, vars, &out)
+	if err != nil {
+		return err
+	}
+	if !out.DeleteMerchant.Success {
+		return errors.New("monarch: Merge: merchant merge was not accepted")
+	}
+	return nil
+}
