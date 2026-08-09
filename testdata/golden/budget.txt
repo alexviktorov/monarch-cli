@@ -1,0 +1,7 @@
+CATEGORY   BUDGET   SPENT    REMAINING
+--------   ------   -----    ---------
+Groceries  $600.00  $420.50  $179.50
+c2         $100.00  $0.00    $100.00
+TOTAL      $700.00  $420.50  $279.50
+
+Budget for August 2026

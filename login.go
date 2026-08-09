@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -10,6 +11,8 @@ import (
 	"syscall"
 
 	"golang.org/x/term"
+
+	"monarch-cli/pkg/monarch"
 )
 
 func readLine(prompt string) string {
@@ -19,21 +22,27 @@ func readLine(prompt string) string {
 	return strings.TrimSpace(line)
 }
 
-func readPassword(prompt string) string {
+// readSecret prompts without echo. It refuses to run without a TTY so a
+// secret is never silently read (and echoed) from a pipe; scripted logins
+// must opt in with --password-stdin.
+func readSecret(prompt string) (string, error) {
+	if !term.IsTerminal(int(syscall.Stdin)) {
+		return "", errors.New("stdin is not a terminal; use --password-stdin for scripted logins")
+	}
 	fmt.Print(prompt)
 	b, err := term.ReadPassword(int(syscall.Stdin))
 	fmt.Println()
 	if err != nil {
-		// Not a TTY (e.g. piped input) — fall back to plain read.
-		return readLine("")
+		return "", err
 	}
-	return strings.TrimSpace(string(b))
+	return strings.TrimSpace(string(b)), nil
 }
 
 func cmdLogin(args []string) {
 	fs := flag.NewFlagSet("login", flag.ExitOnError)
 	email := fs.String("email", "", "Monarch account email (prompted if omitted)")
-	totpSecret := fs.String("totp-secret", "", "TOTP secret key — generates the 2FA code automatically (optional)")
+	useTOTP := fs.Bool("totp", false, "generate the 2FA code from a TOTP secret (read from MONARCH_TOTP_SECRET or prompted — never from argv)")
+	passwordStdin := fs.Bool("password-stdin", false, "read the password from the first line of stdin (for scripts)")
 	fs.Parse(args)
 
 	ctx := context.Background()
@@ -46,47 +55,53 @@ func cmdLogin(args []string) {
 	if e == "" {
 		e = readLine("Email: ")
 	}
-	password := readPassword("Password: ")
+	var password string
+	if *passwordStdin {
+		password = readLine("")
+	} else {
+		password, err = readSecret("Password: ")
+		if err != nil {
+			fatal("%v", err)
+		}
+	}
 
-	if *totpSecret != "" {
-		err = client.Auth.LoginWithTOTP(ctx, e, password, *totpSecret)
+	if *useTOTP {
+		secret := os.Getenv("MONARCH_TOTP_SECRET")
+		if secret == "" {
+			secret, err = readSecret("TOTP secret: ")
+			if err != nil {
+				fatal("%v", err)
+			}
+		}
+		err = client.Auth.LoginWithTOTP(ctx, e, password, secret)
 	} else {
 		err = client.Auth.Login(ctx, e, password)
-		if err != nil {
-			msg := err.Error()
-			switch {
-			case strings.Contains(msg, "MFA required"):
-				code := readLine("Two-factor code: ")
-				err = client.Auth.LoginWithMFA(ctx, e, password, code)
-			case strings.Contains(msg, "Email OTP required"):
-				code := readLine("Code sent to your email: ")
-				err = client.Auth.LoginWithEmailOTP(ctx, e, password, code)
-			}
+		switch {
+		case errors.Is(err, monarch.ErrMFARequired):
+			code := readLine("Two-factor code: ")
+			err = client.Auth.LoginWithMFA(ctx, e, password, code)
+		case errors.Is(err, monarch.ErrEmailOTPRequired):
+			code := readLine("Code sent to your email: ")
+			err = client.Auth.LoginWithEmailOTP(ctx, e, password, code)
 		}
 	}
 	if err != nil {
 		fatal("login failed: %v", err)
 	}
-
-	// The client saves the session automatically (SessionFile option), but
-	// save explicitly too so MFA paths are covered regardless of library version.
-	if err := client.Auth.SaveSession(sessionPath()); err != nil {
-		fatal("logged in, but failed to save session: %v", err)
-	}
-	_ = os.Chmod(sessionPath(), 0o600)
-	fmt.Printf("Logged in as %s. Session saved to %s\n", e, sessionPath())
+	// The session store (Keychain on macOS) is written by the library on
+	// successful login.
+	fmt.Printf("Logged in as %s.\n", e)
 }
 
 func cmdLogout(args []string) {
-	sp := sessionPath()
-	if err := os.Remove(sp); err != nil {
-		if os.IsNotExist(err) {
-			fmt.Println("No saved session.")
-			return
-		}
+	store, err := sessionStore()
+	if err != nil {
 		fatal("%v", err)
 	}
-	fmt.Printf("Session removed (%s).\n", sp)
+	if err := store.Delete(); err != nil {
+		fatal("%v", err)
+	}
+	fmt.Println("Logged out.")
 }
 
 func cmdWhoami(args []string) {
@@ -94,7 +109,7 @@ func cmdWhoami(args []string) {
 	if err != nil {
 		fatal("%v", err)
 	}
-	s := client.GetSession()
+	s := client.Session()
 	if s == nil || s.Token == "" {
 		fatal("not logged in")
 	}
@@ -103,7 +118,7 @@ func cmdWhoami(args []string) {
 	} else {
 		fmt.Println("Authenticated via token")
 	}
-	if !s.ExpiresAt.IsZero() {
-		fmt.Printf("Session expires: %s\n", s.ExpiresAt.Format("2006-01-02 15:04 MST"))
+	if !s.CreatedAt.IsZero() {
+		fmt.Printf("Session created: %s\n", s.CreatedAt.Local().Format("2006-01-02 15:04 MST"))
 	}
 }

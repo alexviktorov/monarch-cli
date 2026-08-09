@@ -1,0 +1,5 @@
+ID  GROUP    CATEGORY
+--  -----    --------
+c1  Food     Groceries
+c2  Food     Restaurants
+c4  Housing  Rent

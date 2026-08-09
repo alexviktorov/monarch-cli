@@ -1,0 +1,6 @@
+ID  NAME               TYPE    INSTITUTION  BALANCE    UPDATED
+--  ----               ----    -----------  -------    -------
+a1  Everyday Checking  Cash    Chase        $5,321.09  2026-08-07
+a3  Visa               Credit  Chase        -$840.55   2026-08-06
+
+Net worth (included accounts): $4,480.54

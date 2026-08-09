@@ -1,0 +1,7 @@
+MERCHANT      AMOUNT      FREQUENCY  NEXT DATE   CATEGORY
+--------      ------      ---------  ---------   --------
+Insurance Co  -$1,200.00  yearly     2026-09-01  Insurance
+Netflix       -$15.99     monthly    2026-08-15  Streaming
+Paycheck      $5,000.00   biweekly   2026-08-14  
+
+Estimated recurring spend: $115.99/month

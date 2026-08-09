@@ -1,0 +1,6 @@
+DATE        MERCHANT      CATEGORY   ACCOUNT            AMOUNT
+----        --------      --------   -------            ------
+2026-08-01  Whole Foods   Groceries  Everyday Checking  -$52.50
+2026-08-02  ACME PAYROLL                                $2,000.00
+
+Showing 2 of 132 transactions (next: --offset 2)

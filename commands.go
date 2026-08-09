@@ -3,12 +3,10 @@ package main
 import (
 	"context"
 	"flag"
-	"fmt"
-	"sort"
-	"strings"
+	"os"
 	"time"
 
-	"github.com/eshaffer321/monarch-go/v2/pkg/monarch"
+	"monarch-cli/pkg/monarch"
 )
 
 func parseDate(s, name string) time.Time {
@@ -45,28 +43,7 @@ func cmdAccounts(args []string) {
 		printJSON(accounts)
 		return
 	}
-
-	t := newTable("ID", "NAME", "TYPE", "INSTITUTION", "BALANCE", "UPDATED")
-	var total float64
-	for _, a := range accounts {
-		if a.IsHidden && !*all {
-			continue
-		}
-		typ, inst := "", ""
-		if a.Type != nil {
-			typ = a.Type.Display
-		}
-		if a.Institution != nil {
-			inst = a.Institution.Name
-		}
-		if a.IncludeInNetWorth {
-			total += a.DisplayBalance
-		}
-		t.row(a.ID, truncate(a.DisplayName, 32), typ, truncate(inst, 24),
-			money(a.DisplayBalance), a.DisplayLastUpdatedAt.Format("2006-01-02"))
-	}
-	t.flush()
-	fmt.Printf("\nNet worth (included accounts): %s\n", money(total))
+	renderAccounts(os.Stdout, accounts, *all)
 }
 
 // ---- transactions ----
@@ -81,8 +58,8 @@ func cmdTransactions(args []string) {
 	search := fs.String("search", "", "search text")
 	account := fs.String("account", "", "filter by account ID (see `monarch accounts`)")
 	category := fs.String("category", "", "filter by category ID (see `monarch categories`)")
-	minAmt := fs.Float64("min", 0, "minimum amount")
-	maxAmt := fs.Float64("max", 0, "maximum amount")
+	minAmt := fs.Float64("min", 0, "minimum absolute amount")
+	maxAmt := fs.Float64("max", 0, "maximum absolute amount")
 	fs.Parse(args)
 
 	client, err := newClient()
@@ -125,30 +102,7 @@ func cmdTransactions(args []string) {
 		printJSON(list)
 		return
 	}
-
-	t := newTable("DATE", "MERCHANT", "CATEGORY", "ACCOUNT", "AMOUNT")
-	for _, tx := range list.Transactions {
-		merchant := tx.PlaidName
-		if tx.Merchant != nil && tx.Merchant.Name != "" {
-			merchant = tx.Merchant.Name
-		}
-		cat := ""
-		if tx.Category != nil {
-			cat = tx.Category.Name
-		}
-		acct := ""
-		if tx.Account != nil {
-			acct = tx.Account.DisplayName
-		}
-		t.row(tx.Date.Format("2006-01-02"), truncate(merchant, 30),
-			truncate(cat, 22), truncate(acct, 22), money(tx.Amount))
-	}
-	t.flush()
-	fmt.Printf("\nShowing %d of %d transactions", len(list.Transactions), list.TotalCount)
-	if list.HasMore {
-		fmt.Printf(" (next: --offset %d)", list.NextOffset)
-	}
-	fmt.Println()
+	renderTransactions(os.Stdout, list)
 }
 
 // ---- summary ----
@@ -170,10 +124,7 @@ func cmdSummary(args []string) {
 		printJSON(s)
 		return
 	}
-	fmt.Printf("Transactions: %d (%s to %s)\n", s.Count, s.First, s.Last)
-	fmt.Printf("Total income:  %s\n", money(s.SumIncome))
-	fmt.Printf("Total expense: %s\n", money(s.SumExpense))
-	fmt.Printf("Average:       %s   Largest expense: %s\n", money(s.Avg), money(s.MaxExpense))
+	renderSummary(os.Stdout, s)
 }
 
 // ---- budget ----
@@ -206,21 +157,7 @@ func cmdBudget(args []string) {
 		printJSON(budgets)
 		return
 	}
-
-	t := newTable("CATEGORY", "BUDGET", "SPENT", "REMAINING")
-	var totBudget, totSpent float64
-	for _, b := range budgets {
-		name := b.CategoryID
-		if b.Category != nil {
-			name = b.Category.Name
-		}
-		totBudget += b.Amount
-		totSpent += b.Spent
-		t.row(truncate(name, 28), money(b.Amount), money(b.Spent), money(b.Remaining))
-	}
-	t.row("TOTAL", money(totBudget), money(totSpent), money(totBudget-totSpent))
-	t.flush()
-	fmt.Printf("\nBudget for %s\n", start.Format("January 2006"))
+	renderBudget(os.Stdout, budgets, start.Format("January 2006"))
 }
 
 // ---- cashflow ----
@@ -247,7 +184,7 @@ func cmdCashflow(args []string) {
 	if err != nil {
 		fatal("%v", err)
 	}
-	cf, err := client.Cashflow.Get(context.Background(), &monarch.CashflowParams{
+	cf, err := client.Cashflow.Get(context.Background(), monarch.CashflowParams{
 		StartDate: s,
 		EndDate:   e,
 	})
@@ -258,52 +195,7 @@ func cmdCashflow(args []string) {
 		printJSON(cf)
 		return
 	}
-
-	fmt.Printf("Cashflow %s → %s\n\n", s.Format("2006-01-02"), e.Format("2006-01-02"))
-	if cf.Summary != nil {
-		fmt.Printf("Income:       %s\n", money(cf.Summary.Income))
-		fmt.Printf("Expenses:     %s\n", money(cf.Summary.Expense))
-		fmt.Printf("Savings:      %s (%.1f%%)\n\n", money(cf.Summary.Savings), cf.Summary.SavingsRate*100)
-	}
-
-	if len(cf.ByCategory) > 0 {
-		cats := make([]*monarch.CashflowCategory, len(cf.ByCategory))
-		copy(cats, cf.ByCategory)
-		sort.Slice(cats, func(i, j int) bool { return cats[i].Amount < cats[j].Amount })
-		t := newTable("TOP SPENDING CATEGORIES", "AMOUNT")
-		n := 0
-		for _, c := range cats {
-			if c.Amount >= 0 || c.Category == nil {
-				continue
-			}
-			t.row(truncate(c.Category.Name, 28), money(c.Amount))
-			n++
-			if n >= *top {
-				break
-			}
-		}
-		t.flush()
-		fmt.Println()
-	}
-
-	if len(cf.ByMerchant) > 0 {
-		merch := make([]*monarch.CashflowMerchant, len(cf.ByMerchant))
-		copy(merch, cf.ByMerchant)
-		sort.Slice(merch, func(i, j int) bool { return merch[i].Amount < merch[j].Amount })
-		t := newTable("TOP MERCHANTS", "AMOUNT")
-		n := 0
-		for _, m := range merch {
-			if m.Amount >= 0 || m.Merchant == nil {
-				continue
-			}
-			t.row(truncate(m.Merchant.Name, 28), money(m.Amount))
-			n++
-			if n >= *top {
-				break
-			}
-		}
-		t.flush()
-	}
+	renderCashflow(os.Stdout, cf, s, e, *top)
 }
 
 // ---- categories ----
@@ -317,7 +209,7 @@ func cmdCategories(args []string) {
 	if err != nil {
 		fatal("%v", err)
 	}
-	cats, err := client.Transactions.Categories().List(context.Background())
+	cats, err := client.Categories.List(context.Background())
 	if err != nil {
 		fatal("%v", err)
 	}
@@ -325,33 +217,7 @@ func cmdCategories(args []string) {
 		printJSON(cats)
 		return
 	}
-
-	sort.Slice(cats, func(i, j int) bool {
-		gi, gj := "", ""
-		if cats[i].Group != nil {
-			gi = cats[i].Group.Name
-		}
-		if cats[j].Group != nil {
-			gj = cats[j].Group.Name
-		}
-		if gi != gj {
-			return gi < gj
-		}
-		return cats[i].Order < cats[j].Order
-	})
-
-	t := newTable("ID", "GROUP", "CATEGORY")
-	for _, c := range cats {
-		if c.IsDisabled {
-			continue
-		}
-		g := ""
-		if c.Group != nil {
-			g = c.Group.Name
-		}
-		t.row(c.ID, g, c.Name)
-	}
-	t.flush()
+	renderCategories(os.Stdout, cats)
 }
 
 // ---- recurring ----
@@ -373,47 +239,10 @@ func cmdRecurring(args []string) {
 		printJSON(recs)
 		return
 	}
-
-	sort.Slice(recs, func(i, j int) bool { return recs[i].Amount < recs[j].Amount })
-	t := newTable("MERCHANT", "AMOUNT", "FREQUENCY", "NEXT DATE", "CATEGORY")
-	var monthly float64
-	for _, r := range recs {
-		name := ""
-		if r.Merchant != nil {
-			name = r.Merchant.Name
-		}
-		cat := ""
-		if r.Category != nil {
-			cat = r.Category.Name
-		}
-		t.row(truncate(name, 28), money(r.Amount), r.Frequency,
-			r.NextDate.Format("2006-01-02"), truncate(cat, 22))
-		if r.Amount < 0 {
-			switch strings.ToLower(r.Frequency) {
-			case "monthly":
-				monthly += -r.Amount
-			case "yearly", "annually":
-				monthly += -r.Amount / 12
-			case "weekly":
-				monthly += -r.Amount * 52 / 12
-			case "biweekly", "every_2_weeks":
-				monthly += -r.Amount * 26 / 12
-			case "quarterly":
-				monthly += -r.Amount / 3
-			}
-		}
-	}
-	t.flush()
-	fmt.Printf("\nEstimated recurring spend: %s/month\n", money(monthly))
+	renderRecurring(os.Stdout, recs)
 }
 
 // ---- networth ----
-
-var liabilityTypes = map[string]bool{
-	"credit":          true,
-	"loan":            true,
-	"other_liability": true,
-}
 
 func cmdNetworth(args []string) {
 	fs := flag.NewFlagSet("networth", flag.ExitOnError)
@@ -431,7 +260,7 @@ func cmdNetworth(args []string) {
 	if err != nil {
 		fatal("%v", err)
 	}
-	snaps, err := client.Accounts.GetSnapshots(context.Background(), &monarch.SnapshotParams{
+	snaps, err := client.Accounts.GetSnapshots(context.Background(), monarch.SnapshotParams{
 		StartDate: s,
 		Timeframe: *timeframe,
 	})
@@ -442,37 +271,5 @@ func cmdNetworth(args []string) {
 		printJSON(snaps)
 		return
 	}
-
-	type row struct{ assets, liabilities float64 }
-	byMonth := map[string]*row{}
-	var months []string
-	for _, sn := range snaps {
-		r, ok := byMonth[sn.Month]
-		if !ok {
-			r = &row{}
-			byMonth[sn.Month] = r
-			months = append(months, sn.Month)
-		}
-		if liabilityTypes[sn.Type] {
-			r.liabilities += sn.TotalValue
-		} else {
-			r.assets += sn.TotalValue
-		}
-	}
-	sort.Strings(months)
-
-	t := newTable("PERIOD", "ASSETS", "LIABILITIES", "NET WORTH")
-	for _, m := range months {
-		r := byMonth[m]
-		net := r.assets - abs(r.liabilities)
-		t.row(m, money(r.assets), money(abs(r.liabilities)), money(net))
-	}
-	t.flush()
-}
-
-func abs(v float64) float64 {
-	if v < 0 {
-		return -v
-	}
-	return v
+	renderNetworth(os.Stdout, snaps)
 }

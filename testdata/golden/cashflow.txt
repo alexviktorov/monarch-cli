@@ -1,0 +1,15 @@
+Cashflow 2026-08-01 → 2026-08-31
+
+Income:       $8,000.00
+Expenses:     $5,000.00
+Savings:      $3,000.00 (37.5%)
+
+TOP SPENDING CATEGORIES  AMOUNT
+-----------------------  ------
+Rent                     -$2,000.00
+Groceries                -$800.00
+
+TOP MERCHANTS  AMOUNT
+-------------  ------
+Landlord       -$2,000.00
+Whole Foods    -$800.00

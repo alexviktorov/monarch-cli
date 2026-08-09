@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"strings"
@@ -10,7 +11,7 @@ import (
 )
 
 // printJSON pretty-prints any value as JSON to stdout.
-func printJSON(v interface{}) error {
+func printJSON(v any) error {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(v)
@@ -47,8 +48,8 @@ type table struct {
 	w *tabwriter.Writer
 }
 
-func newTable(headers ...string) *table {
-	t := &table{w: tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)}
+func newTable(out io.Writer, headers ...string) *table {
+	t := &table{w: tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)}
 	fmt.Fprintln(t.w, strings.Join(headers, "\t"))
 	sep := make([]string, len(headers))
 	for i, h := range headers {
@@ -76,7 +77,7 @@ func truncate(s string, n int) string {
 	return s[:n-1] + "…"
 }
 
-func fatal(format string, args ...interface{}) {
+func fatal(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, "error: "+format+"\n", args...)
 	os.Exit(1)
 }
