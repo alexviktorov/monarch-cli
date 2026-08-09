@@ -52,10 +52,9 @@ func sessionStore() (monarch.SessionStore, error) {
 	if runtime.GOOS == "darwin" {
 		store, err := monarch.NewKeychainStore()
 		if err != nil {
-			// Locked/broken keychain: degrade to the file store rather
-			// than failing confusingly at first use.
-			fmt.Fprintf(os.Stderr, "note: %v; using file store instead\n", err)
-			return monarch.NewFileStore(defaultSessionFile()), nil
+			// Never silently downgrade the token to a plaintext file:
+			// storage weaker than the Keychain must be an explicit choice.
+			return nil, fmt.Errorf("%w — refusing to fall back to a plaintext session file; unlock the login keychain, or set MONARCH_SESSION_FILE to explicitly opt into file storage", err)
 		}
 		for _, legacy := range legacySessionCandidates() {
 			migrateLegacySession(store, legacy)

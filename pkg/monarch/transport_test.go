@@ -225,6 +225,22 @@ func TestRedirectsAreNotFollowed(t *testing.T) {
 	}
 }
 
+func TestRetryAfterHonoredBeyondBackoffCap(t *testing.T) {
+	h := http.Header{}
+	h.Set("Retry-After", "30")
+	if got := parseRetryAfter(h); got != 30*time.Second {
+		t.Errorf("parseRetryAfter(30) = %v, want 30s (must not be capped to the backoff max)", got)
+	}
+	h.Set("Retry-After", "300")
+	if got := parseRetryAfter(h); got != maxRetryAfterWait {
+		t.Errorf("parseRetryAfter(300) = %v, want the %v ceiling", got, maxRetryAfterWait)
+	}
+	c := &Client{retryBase: 500 * time.Millisecond}
+	if got := c.backoff(1, 30*time.Second); got != 30*time.Second {
+		t.Errorf("backoff with Retry-After 30s = %v, want the server's ask to win", got)
+	}
+}
+
 func TestGraphQLRequiresToken(t *testing.T) {
 	var calls atomic.Int32
 	c := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

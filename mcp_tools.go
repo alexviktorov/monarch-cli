@@ -1089,7 +1089,7 @@ func (h *toolHandlers) createTag(ctx context.Context, req *mcp.CallToolRequest, 
 // ---- bulk_categorize (write; registered only when gated on) ----
 
 type bulkCategorizeIn struct {
-	TransactionIDs []string `json:"transaction_ids" jsonschema:"ids from get_transactions (max 100 per call)"`
+	TransactionIDs []string `json:"transaction_ids" jsonschema:"ids from get_transactions (max 25 per call — chunk larger sets across calls)"`
 	CategoryID     string   `json:"category_id" jsonschema:"target category id from get_categories"`
 	DryRun         *bool    `json:"dry_run,omitempty" jsonschema:"DEFAULTS TO TRUE: preview the planned change without writing. Set false explicitly to execute"`
 }
@@ -1118,8 +1118,11 @@ func (h *toolHandlers) bulkCategorize(ctx context.Context, req *mcp.CallToolRequ
 	if len(in.TransactionIDs) == 0 {
 		return nil, zero, errors.New("transaction_ids is required")
 	}
-	if len(in.TransactionIDs) > 100 {
-		return nil, zero, fmt.Errorf("too many transactions (%d): max 100 per call", len(in.TransactionIDs))
+	// The writes run sequentially (deliberate: no thundering mutations
+	// against a financial API) inside the shared 30s per-call timeout;
+	// 25 keeps a full batch comfortably within it.
+	if len(in.TransactionIDs) > 25 {
+		return nil, zero, fmt.Errorf("too many transactions (%d): max 25 per call — chunk larger sets", len(in.TransactionIDs))
 	}
 	if in.CategoryID == "" {
 		return nil, zero, errors.New("category_id is required")
@@ -1273,7 +1276,7 @@ func buildMCPServer(api monarchAPI, writes bool, logger *slog.Logger, limits *to
 		}, wrap(limits, h.createTag))
 		mcp.AddTool(server, &mcp.Tool{
 			Name:        "bulk_categorize",
-			Description: "Recategorize up to 100 transactions to one category. DRY-RUN BY DEFAULT: the first call previews the change; call again with dry_run=false to execute. Per-transaction results are reported.",
+			Description: "Recategorize up to 25 transactions to one category (chunk larger sets across calls). DRY-RUN BY DEFAULT: the first call previews the change; call again with dry_run=false to execute. Per-transaction results are reported.",
 			Annotations: &mcp.ToolAnnotations{DestructiveHint: ptr(true), IdempotentHint: true, OpenWorldHint: ptr(false)},
 		}, wrap(limits, h.bulkCategorize))
 	}

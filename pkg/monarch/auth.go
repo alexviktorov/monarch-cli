@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -36,7 +37,8 @@ func classifyLoginDetail(detail string) error {
 }
 
 type AuthService struct {
-	c *Client
+	c  *Client
+	mu sync.Mutex // serializes logins (deviceUUID init + session swap)
 	// deviceUUID is generated once per AuthService and reused across the
 	// MFA retry — Monarch ties the challenge to the device identity, so
 	// the second POST must present the same UUID as the first.
@@ -70,6 +72,8 @@ func (a *AuthService) LoginWithTOTP(ctx context.Context, email, password, totpSe
 }
 
 func (a *AuthService) login(ctx context.Context, email, password string, extra map[string]any) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	if a.deviceUUID == "" {
 		a.deviceUUID = newUUIDv4()
 	}

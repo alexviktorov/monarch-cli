@@ -43,9 +43,17 @@ type fileStore struct{ path string }
 func NewFileStore(path string) SessionStore { return &fileStore{path: path} }
 
 func (f *fileStore) Load() (*Session, error) {
-	// O_NOFOLLOW makes the symlink refusal atomic with the open — no
-	// check-then-read window.
-	fh, err := os.OpenFile(f.path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	// os.Root pins the parent directory (immune to it being swapped for a
+	// symlink mid-operation); O_NOFOLLOW refuses a symlinked file itself.
+	root, err := os.OpenRoot(filepath.Dir(f.path))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, ErrNoSession
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	fh, err := root.OpenFile(filepath.Base(f.path), os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, ErrNoSession
 	}
@@ -94,21 +102,37 @@ func (f *fileStore) Save(s *Session) error {
 	if err != nil {
 		return err
 	}
-	// Write-to-temp + rename: atomic, and the secret never exists on disk
-	// with permissions other than 0600 (CreateTemp creates 0600).
-	tmp, err := os.CreateTemp(dir, ".session-*")
+	// os.Root pins the directory so every operation below resolves against
+	// the fd, not the path — a concurrent swap of an ancestor for a symlink
+	// cannot redirect the write. O_EXCL refuses a pre-planted temp entry
+	// (including a symlink); write-to-temp + rename keeps the update atomic
+	// and the secret never exists on disk with permissions other than 0600.
+	root, err := os.OpenRoot(dir)
 	if err != nil {
 		return err
 	}
-	defer os.Remove(tmp.Name())
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
+	defer root.Close()
+	name := filepath.Base(f.path)
+	tmp := name + ".tmp"
+	_ = root.Remove(tmp)
+	fh, err := root.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
 		return err
 	}
-	if err := tmp.Close(); err != nil {
+	if _, err := fh.Write(data); err != nil {
+		fh.Close()
+		_ = root.Remove(tmp)
 		return err
 	}
-	return os.Rename(tmp.Name(), f.path)
+	if err := fh.Close(); err != nil {
+		_ = root.Remove(tmp)
+		return err
+	}
+	if err := root.Rename(tmp, name); err != nil {
+		_ = root.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 func (f *fileStore) Delete() error {

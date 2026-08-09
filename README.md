@@ -117,8 +117,8 @@ Claude Desktop (`~/Library/Application Support/Claude/claude_desktop_config.json
 
 Three write tools exist — `update_transaction` (category, notes, amount,
 date, merchant, hide, mark-reviewed, tags), `create_tag`, and
-`bulk_categorize` (up to 100 transactions, **dry-run by default** — a
-preview is returned unless `dry_run=false` is passed explicitly). They are
+`bulk_categorize` (up to 25 transactions per call, **dry-run by default** —
+a preview is returned unless `dry_run=false` is passed explicitly). They are
 **not even registered** unless the server is started with *both* the
 `--allow-writes` flag and `MONARCH_MCP_ALLOW_WRITES=1`; a mismatch refuses to
 start. Register it as a separate server entry and only while you're actively

@@ -12,6 +12,11 @@ import (
 	"time"
 )
 
+// Concurrency contract: a Client is safe for concurrent use of the read and
+// write service methods (they only read the session). Auth.Login* and
+// SaveSession swap/persist the session and must not run concurrently with
+// other calls — the CLI and MCP binaries never do so (logins are exclusively
+// interactive), and logins themselves are serialized internally.
 type Client struct {
 	httpClient    *http.Client
 	baseURL       string

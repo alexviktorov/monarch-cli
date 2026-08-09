@@ -29,10 +29,14 @@ const (
 	monarchClientName    = "monarch-core-web-app-graphql"
 	defaultClientVersion = "v1.0.1668"
 
-	maxAttempts   = 4
-	maxRetryDelay = 8 * time.Second
-	maxBodyBytes  = 4 << 20 // defensive cap on response reads
-	errBodyKeep   = 500     // bytes of an error body retained on APIError
+	maxAttempts = 4
+	// maxRetryDelay caps our own exponential backoff; maxRetryAfterWait
+	// caps how long we'll honor a server-sent Retry-After — deliberately
+	// larger, because retrying before the server asked risks a hard block.
+	maxRetryDelay     = 8 * time.Second
+	maxRetryAfterWait = 60 * time.Second
+	maxBodyBytes      = 4 << 20 // defensive cap on response reads
+	errBodyKeep       = 500     // bytes of an error body retained on APIError
 )
 
 type gqlRequest struct {
@@ -123,9 +127,11 @@ func (c *Client) do(ctx context.Context, operation string, build func() (*http.R
 	var retryAfter time.Duration
 	for attempt := range attempts {
 		if attempt > 0 {
+			timer := time.NewTimer(c.backoff(attempt, retryAfter))
 			select {
-			case <-time.After(c.backoff(attempt, retryAfter)):
+			case <-timer.C:
 			case <-ctx.Done():
+				timer.Stop()
 				return 0, nil, ctx.Err()
 			}
 		}
@@ -170,7 +176,7 @@ func parseRetryAfter(h http.Header) time.Duration {
 	if err != nil || secs < 0 {
 		return 0
 	}
-	return min(time.Duration(secs)*time.Second, maxRetryDelay)
+	return min(time.Duration(secs)*time.Second, maxRetryAfterWait)
 }
 
 func apiError(operation string, status int, body []byte) error {
