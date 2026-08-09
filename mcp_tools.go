@@ -227,14 +227,19 @@ type accountOut struct {
 	Type        string  `json:"type,omitempty"`
 	Institution string  `json:"institution,omitempty"`
 	Balance     float64 `json:"balance"`
-	Hidden      bool    `json:"hidden,omitempty"`
-	InNetWorth  bool    `json:"in_net_worth"`
-	Updated     string  `json:"updated,omitempty"`
+	// IsLiability marks credit/loan-type accounts, whose balances Monarch
+	// reports as positive magnitudes owed — subtract them, never add.
+	IsLiability bool   `json:"is_liability,omitempty"`
+	Hidden      bool   `json:"hidden,omitempty"`
+	InNetWorth  bool   `json:"in_net_worth"`
+	Updated     string `json:"updated,omitempty"`
 }
 
 type getAccountsOut struct {
-	Accounts []accountOut `json:"accounts"`
-	NetWorth float64      `json:"net_worth"`
+	Accounts         []accountOut `json:"accounts"`
+	TotalAssets      float64      `json:"total_assets"`
+	TotalLiabilities float64      `json:"total_liabilities"`
+	NetWorth         float64      `json:"net_worth"`
 }
 
 func (h *toolHandlers) getAccounts(ctx context.Context, req *mcp.CallToolRequest, in getAccountsIn) (*mcp.CallToolResult, getAccountsOut, error) {
@@ -243,16 +248,17 @@ func (h *toolHandlers) getAccounts(ctx context.Context, req *mcp.CallToolRequest
 		return nil, getAccountsOut{}, err
 	}
 	out := getAccountsOut{Accounts: []accountOut{}}
+	assets, liabilities := accountNetWorth(accounts)
+	out.TotalAssets, out.TotalLiabilities = assets, liabilities
+	out.NetWorth = assets - liabilities
 	for _, a := range accounts {
-		if a.IncludeInNetWorth {
-			out.NetWorth += a.DisplayBalance
-		}
 		if a.IsHidden && !in.IncludeHidden {
 			continue
 		}
 		o := accountOut{
 			ID: a.ID, Name: a.DisplayName, Balance: a.DisplayBalance,
-			Hidden: a.IsHidden, InNetWorth: a.IncludeInNetWorth,
+			IsLiability: accountIsLiability(a),
+			Hidden:      a.IsHidden, InNetWorth: a.IncludeInNetWorth,
 		}
 		if a.Type != nil {
 			o.Type = a.Type.Display
@@ -1184,7 +1190,7 @@ func buildMCPServer(api monarchAPI, writes bool, logger *slog.Logger, limits *to
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "get_accounts",
-		Description: "List accounts with balances, institution, and stable account ids; includes computed net worth over included accounts.",
+		Description: "List accounts with balances, institution, and stable account ids. net_worth = total_assets − total_liabilities; liability balances (is_liability=true) are positive magnitudes OWED and must never be added to assets.",
 		Annotations: roAnnotations(),
 	}, wrap(limits, h.getAccounts))
 	mcp.AddTool(server, &mcp.Tool{

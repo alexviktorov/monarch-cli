@@ -18,9 +18,32 @@ import (
 // touches nothing else. commands.go supplies the data; golden tests in
 // render_test.go pin the output.
 
+// accountIsLiability classifies an account by its type name using the same
+// set the net-worth snapshots use.
+func accountIsLiability(a *monarch.Account) bool {
+	return a.Type != nil && liabilityTypes[a.Type.Name]
+}
+
+// accountNetWorth splits included accounts into assets and liabilities.
+// Monarch reports liability balances as positive magnitudes, so they must
+// be SUBTRACTED, never summed; abs() keeps this correct under either sign
+// convention (same trick as networthPoints).
+func accountNetWorth(accounts []*monarch.Account) (assets, liabilities float64) {
+	for _, a := range accounts {
+		if !a.IncludeInNetWorth {
+			continue
+		}
+		if accountIsLiability(a) {
+			liabilities += abs(a.DisplayBalance)
+		} else {
+			assets += a.DisplayBalance
+		}
+	}
+	return assets, liabilities
+}
+
 func renderAccounts(w io.Writer, accounts []*monarch.Account, all bool) {
 	t := newTable(w, "ID", "NAME", "TYPE", "INSTITUTION", "BALANCE", "UPDATED")
-	var total float64
 	for _, a := range accounts {
 		if a.IsHidden && !all {
 			continue
@@ -32,14 +55,13 @@ func renderAccounts(w io.Writer, accounts []*monarch.Account, all bool) {
 		if a.Institution != nil {
 			inst = a.Institution.Name
 		}
-		if a.IncludeInNetWorth {
-			total += a.DisplayBalance
-		}
 		t.row(a.ID, truncate(a.DisplayName, 32), typ, truncate(inst, 24),
 			money(a.DisplayBalance), a.DisplayLastUpdatedAt.Format("2006-01-02"))
 	}
 	t.flush()
-	fmt.Fprintf(w, "\nNet worth (included accounts): %s\n", money(total))
+	assets, liabilities := accountNetWorth(accounts)
+	fmt.Fprintf(w, "\nNet worth (included accounts): %s  (assets %s − liabilities %s)\n",
+		money(assets-liabilities), money(assets), money(liabilities))
 }
 
 func renderTransactions(w io.Writer, list *monarch.TransactionList) {

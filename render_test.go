@@ -47,12 +47,15 @@ func TestRenderAccounts(t *testing.T) {
 	accounts := []*monarch.Account{
 		{ID: "a1", DisplayName: "Everyday Checking", DisplayBalance: 5321.09,
 			IncludeInNetWorth: true, DisplayLastUpdatedAt: mustDate(t, "2026-08-07"),
-			Type: &monarch.AccountType{Display: "Cash"}, Institution: &monarch.InstitutionRef{Name: "Chase"}},
+			Type: &monarch.AccountType{Name: "depository", Display: "Cash"}, Institution: &monarch.InstitutionRef{Name: "Chase"}},
 		{ID: "a2", DisplayName: "Hidden Sock Drawer", DisplayBalance: 12, IsHidden: true,
 			DisplayLastUpdatedAt: mustDate(t, "2026-01-01")},
-		{ID: "a3", DisplayName: "Visa", DisplayBalance: -840.55, IncludeInNetWorth: true,
+		// Liability with a POSITIVE balance — the convention the live API
+		// uses. Net worth must SUBTRACT it (5321.09 − 840.55 = 4480.54),
+		// never add; the golden files pin that.
+		{ID: "a3", DisplayName: "Visa", DisplayBalance: 840.55, IncludeInNetWorth: true,
 			DisplayLastUpdatedAt: mustDate(t, "2026-08-06"),
-			Type:                 &monarch.AccountType{Display: "Credit"}, Institution: &monarch.InstitutionRef{Name: "Chase"}},
+			Type:                 &monarch.AccountType{Name: "credit", Display: "Credit"}, Institution: &monarch.InstitutionRef{Name: "Chase"}},
 	}
 	var visible, all bytes.Buffer
 	renderAccounts(&visible, accounts, false)

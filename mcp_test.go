@@ -31,8 +31,13 @@ func (f *fakeAPI) ListAccounts(ctx context.Context) ([]*monarch.Account, error) 
 		return nil, f.err
 	}
 	return []*monarch.Account{
-		{ID: "a1", DisplayName: "Checking", DisplayBalance: 100, IncludeInNetWorth: true},
+		{ID: "a1", DisplayName: "Checking", DisplayBalance: 100, IncludeInNetWorth: true,
+			Type: &monarch.AccountType{Name: "depository", Display: "Cash"}},
 		{ID: "a2", DisplayName: "Hidden", DisplayBalance: 5, IsHidden: true, IncludeInNetWorth: true},
+		// Liability with a positive balance, as the live API reports them:
+		// must be subtracted from net worth, never added.
+		{ID: "a3", DisplayName: "Visa", DisplayBalance: 30, IncludeInNetWorth: true,
+			Type: &monarch.AccountType{Name: "credit", Display: "Credit"}},
 	}, nil
 }
 
@@ -387,9 +392,17 @@ func TestMCPGetAccounts(t *testing.T) {
 	if err := json.Unmarshal(raw, &out); err != nil {
 		t.Fatal(err)
 	}
-	// Hidden account excluded from the list but counted in net worth.
-	if len(out.Accounts) != 1 || out.Accounts[0].ID != "a1" || out.NetWorth != 105 {
-		t.Errorf("out = %+v", out)
+	// Hidden account excluded from the list but counted in net worth;
+	// the positive-balance credit account must be SUBTRACTED:
+	// assets 105 − liabilities 30 = 75.
+	if len(out.Accounts) != 2 || out.Accounts[0].ID != "a1" {
+		t.Errorf("accounts = %+v", out.Accounts)
+	}
+	if out.TotalAssets != 105 || out.TotalLiabilities != 30 || out.NetWorth != 75 {
+		t.Errorf("net worth = %+v, want assets 105 − liabilities 30 = 75", out)
+	}
+	if !out.Accounts[1].IsLiability {
+		t.Error("credit account must be flagged is_liability")
 	}
 }
 
