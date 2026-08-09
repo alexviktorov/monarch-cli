@@ -41,6 +41,7 @@ type monarchAPI interface {
 	CreateTransaction(ctx context.Context, p monarch.CreateTransactionParams) (string, error)
 	SetBudgetAmount(ctx context.Context, p monarch.BudgetItemParams) (*monarch.BudgetItem, error)
 	UpdateMerchant(ctx context.Context, id string, p monarch.MerchantUpdate) (*monarch.MerchantInfo, error)
+	ListMerchants(ctx context.Context, search string, limit int) ([]*monarch.Merchant, error)
 	CreateCategory(ctx context.Context, p monarch.CategoryCreate) (*monarch.Category, error)
 	UpdateCategory(ctx context.Context, id string, p monarch.CategoryUpdate) (*monarch.Category, error)
 	DeleteCategory(ctx context.Context, id, moveToCategoryID string) error
@@ -166,6 +167,10 @@ func (a *liveAPI) SetBudgetAmount(ctx context.Context, p monarch.BudgetItemParam
 
 func (a *liveAPI) UpdateMerchant(ctx context.Context, id string, p monarch.MerchantUpdate) (*monarch.MerchantInfo, error) {
 	return a.c.Merchants.Update(ctx, id, p)
+}
+
+func (a *liveAPI) ListMerchants(ctx context.Context, search string, limit int) ([]*monarch.Merchant, error) {
+	return a.c.Merchants.List(ctx, search, limit, 0)
 }
 
 func (a *liveAPI) CreateCategory(ctx context.Context, p monarch.CategoryCreate) (*monarch.Category, error) {
@@ -1022,6 +1027,35 @@ func (h *toolHandlers) getInstitutions(ctx context.Context, _ *mcp.CallToolReque
 	return nil, out, nil
 }
 
+// ---- get_merchants ----
+
+type getMerchantsIn struct {
+	Search string `json:"search,omitempty" jsonschema:"filter merchants by name substring; empty lists all"`
+	Limit  int    `json:"limit,omitempty" jsonschema:"max results (default 100)"`
+}
+
+type merchantOut struct {
+	ID               string `json:"id"`
+	Name             string `json:"name"`
+	TransactionCount int    `json:"transaction_count"`
+}
+
+type getMerchantsOut struct {
+	Merchants []merchantOut `json:"merchants"`
+}
+
+func (h *toolHandlers) getMerchants(ctx context.Context, _ *mcp.CallToolRequest, in getMerchantsIn) (*mcp.CallToolResult, getMerchantsOut, error) {
+	merchants, err := h.api.ListMerchants(ctx, in.Search, in.Limit)
+	if err != nil {
+		return nil, getMerchantsOut{}, err
+	}
+	out := getMerchantsOut{Merchants: []merchantOut{}}
+	for _, m := range merchants {
+		out.Merchants = append(out.Merchants, merchantOut{ID: m.ID, Name: m.Name, TransactionCount: m.TransactionCount})
+	}
+	return nil, out, nil
+}
+
 // ---- update_transaction (write; registered only when gated on) ----
 
 type updateTransactionIn struct {
@@ -1749,6 +1783,11 @@ func buildMCPServer(api monarchAPI, writes bool, logger *slog.Logger, limits *to
 		Description: "Savings goals with balance, target, progress, and forecasted completion.",
 		Annotations: roAnnotations(),
 	}, wrap(limits, h.getGoals))
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "get_merchants",
+		Description: "Search or list merchants with stable ids and transaction counts — use these ids for update_merchant (and to spot duplicate merchants).",
+		Annotations: roAnnotations(),
+	}, wrap(limits, h.getMerchants))
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "get_institutions",
 		Description: "Institution connection health — update_required=true explains stale account balances.",

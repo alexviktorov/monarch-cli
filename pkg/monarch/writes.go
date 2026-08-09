@@ -494,11 +494,7 @@ func (s *BudgetsService) SetAmount(ctx context.Context, p BudgetItemParams) (*Bu
 	return out.UpdateOrCreateBudgetItem.BudgetItem, nil
 }
 
-// ---- merchants ----
-
-// MerchantsService currently exposes mutations only (the merchant read
-// surface lives inside transactions/cashflow responses).
-type MerchantsService struct{ c *Client }
+// ---- merchants (service struct and reads live in merchants.go) ----
 
 // RecurrenceUpdate configures a merchant's recurring stream — the only
 // known way to modify recurring frequency/amount/base date/active status.

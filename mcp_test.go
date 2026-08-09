@@ -188,6 +188,13 @@ func (f *fakeAPI) SetBudgetAmount(ctx context.Context, p monarch.BudgetItemParam
 	return &monarch.BudgetItem{ID: "b1", BudgetAmount: p.Amount}, nil
 }
 
+func (f *fakeAPI) ListMerchants(ctx context.Context, search string, limit int) ([]*monarch.Merchant, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return []*monarch.Merchant{{ID: "m1", Name: "Netflix", TransactionCount: 12}}, nil
+}
+
 func (f *fakeAPI) UpdateMerchant(ctx context.Context, id string, p monarch.MerchantUpdate) (*monarch.MerchantInfo, error) {
 	if f.err != nil {
 		return nil, f.err
@@ -293,8 +300,9 @@ func resultText(t *testing.T, res *mcp.CallToolResult) string {
 var readToolNames = []string{
 	"check_session", "get_accounts", "get_budget", "get_cashflow",
 	"get_cashflow_summary", "get_categories", "get_goals", "get_holdings",
-	"get_institutions", "get_networth_history", "get_recurring", "get_rules",
-	"get_tags", "get_transaction", "get_transaction_summary", "get_transactions",
+	"get_institutions", "get_merchants", "get_networth_history", "get_recurring",
+	"get_rules", "get_tags", "get_transaction", "get_transaction_summary",
+	"get_transactions",
 }
 
 var writeToolNames = []string{

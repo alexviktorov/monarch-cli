@@ -508,3 +508,21 @@ func TestWritesDisabledByDefault(t *testing.T) {
 		t.Errorf("requireWrites = %v, want ErrWritesDisabled", err)
 	}
 }
+
+func TestMerchantsList(t *testing.T) {
+	var vars map[string]any
+	c := gqlServer(t, "GetMerchantsSearch", `{"merchants":[
+		{"id":"m1","name":"Netflix","transactionCount":12},
+		{"id":"m2","name":"Netflix Inc","transactionCount":3}
+	]}`, &vars)
+	merchants, err := c.Merchants.List(context.Background(), "netflix", 50, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vars["search"] != "netflix" || vars["limit"] != float64(50) {
+		t.Errorf("vars = %v", vars)
+	}
+	if len(merchants) != 2 || merchants[1].TransactionCount != 3 {
+		t.Errorf("merchants = %+v", merchants)
+	}
+}
