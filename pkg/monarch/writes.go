@@ -1138,3 +1138,50 @@ func (s *GoalsService) Contribute(ctx context.Context, goalID, accountID string,
 func (s *GoalsService) Withdraw(ctx context.Context, goalID, accountID string, amount float64, date *time.Time) (*GoalMoveResult, error) {
 	return s.move(ctx, "Common_WithdrawFromSavingsGoal", mutationWithdrawGoal, "createSavingsGoalWithdrawal", goalID, accountID, amount, date)
 }
+
+// ---- account refresh (a "remote action": re-syncs accounts from their
+// institutions via the aggregator; not destructive, but it reaches out to
+// third parties, so it lives behind the write gate) ----
+
+const mutationForceRefresh = `mutation Common_ForceRefreshAccountsMutation($input: ForceRefreshAllAccountsInput) {
+  forceRefreshAllAccounts(input: $input) {
+    success
+    forceRefreshOperationId
+    errors { message code fieldErrors { field messages } }
+  }
+}`
+
+// ForceRefresh re-syncs ALL accounts from their institutions (the live
+// schema's ForceRefreshAllAccountsInput has only an optional `source`
+// attribution; there is no per-account selection here) and returns the
+// operation id for polling with RefreshStatus. Shape from the
+// app.monarch.com schema (2026-08-09) — the first real trigger is the
+// owner's to make. Requires WithWritesEnabled.
+func (s *AccountsService) ForceRefresh(ctx context.Context, source string) (string, error) {
+	if err := s.c.requireWrites(); err != nil {
+		return "", err
+	}
+	input := map[string]any{}
+	if source != "" {
+		input["source"] = source
+	}
+	var out struct {
+		ForceRefreshAllAccounts struct {
+			Success bool          `json:"success"`
+			OpID    string        `json:"forceRefreshOperationId"`
+			Errors  payloadErrors `json:"errors"`
+		} `json:"forceRefreshAllAccounts"`
+	}
+	err := s.c.doGraphQLNoRetry(ctx, "Common_ForceRefreshAccountsMutation", mutationForceRefresh,
+		map[string]any{"input": input}, &out)
+	if err != nil {
+		return "", err
+	}
+	if len(out.ForceRefreshAllAccounts.Errors) > 0 {
+		return "", payloadErrs("ForceRefresh", out.ForceRefreshAllAccounts.Errors)
+	}
+	if !out.ForceRefreshAllAccounts.Success {
+		return "", errors.New("monarch: ForceRefresh: refresh request was not accepted")
+	}
+	return out.ForceRefreshAllAccounts.OpID, nil
+}

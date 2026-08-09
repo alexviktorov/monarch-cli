@@ -55,6 +55,8 @@ type monarchAPI interface {
 	GetCreditScoreHistory(ctx context.Context) ([]*monarch.CreditScoreSnapshot, error)
 	ContributeToGoal(ctx context.Context, goalID, accountID string, amount float64) (*monarch.GoalMoveResult, error)
 	WithdrawFromGoal(ctx context.Context, goalID, accountID string, amount float64) (*monarch.GoalMoveResult, error)
+	ForceRefreshAccounts(ctx context.Context) (string, error)
+	RefreshAccountsStatus(ctx context.Context, opID string) (*monarch.RefreshOperation, error)
 }
 
 type txQuery struct {
@@ -260,6 +262,14 @@ func (a *liveAPI) ContributeToGoal(ctx context.Context, goalID, accountID string
 
 func (a *liveAPI) WithdrawFromGoal(ctx context.Context, goalID, accountID string, amount float64) (*monarch.GoalMoveResult, error) {
 	return a.c.Goals.Withdraw(ctx, goalID, accountID, amount, nil)
+}
+
+func (a *liveAPI) ForceRefreshAccounts(ctx context.Context) (string, error) {
+	return a.c.Accounts.ForceRefresh(ctx, "monarch-cli")
+}
+
+func (a *liveAPI) RefreshAccountsStatus(ctx context.Context, opID string) (*monarch.RefreshOperation, error) {
+	return a.c.Accounts.RefreshStatus(ctx, opID)
 }
 
 func (a *liveAPI) GetSummary(ctx context.Context) (*monarch.TransactionSummary, error) {
@@ -1415,6 +1425,53 @@ func (h *toolHandlers) goalMove(ctx context.Context, in goalMoveIn, withdraw boo
 	return nil, goalMoveOut{GoalID: res.GoalID, CurrentBalance: res.CurrentBalance, EventID: res.EventID}, nil
 }
 
+// ---- refresh_status (read) ----
+
+type refreshStatusIn struct {
+	OperationID string `json:"operation_id" jsonschema:"the operation id returned by refresh_accounts"`
+}
+
+type refreshStatusOut struct {
+	State     string `json:"state"`
+	Completed int    `json:"completed_accounts"`
+	Total     int    `json:"total_accounts"`
+	Done      bool   `json:"done"`
+}
+
+func (h *toolHandlers) refreshStatus(ctx context.Context, _ *mcp.CallToolRequest, in refreshStatusIn) (*mcp.CallToolResult, refreshStatusOut, error) {
+	if in.OperationID == "" {
+		return nil, refreshStatusOut{}, errors.New("operation_id is required")
+	}
+	op, err := h.api.RefreshAccountsStatus(ctx, in.OperationID)
+	if err != nil {
+		return nil, refreshStatusOut{}, err
+	}
+	return nil, refreshStatusOut{State: op.State, Completed: op.Completed, Total: op.Total, Done: op.Done()}, nil
+}
+
+// ---- refresh_accounts (write; remote action) ----
+
+type refreshAccountsOut struct {
+	OperationID string `json:"operation_id"`
+	Note        string `json:"note"`
+}
+
+func (h *toolHandlers) refreshAccounts(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, refreshAccountsOut, error) {
+	var zero refreshAccountsOut
+	if err := h.requireWriteMode(); err != nil {
+		return nil, zero, err
+	}
+	opID, err := h.api.ForceRefreshAccounts(ctx)
+	if err != nil {
+		return nil, zero, err
+	}
+	h.logger.Info("write applied", "tool", "refresh_accounts", "operation_id", opID)
+	return nil, refreshAccountsOut{
+		OperationID: opID,
+		Note:        "all accounts are re-syncing from their institutions; poll refresh_status with this operation_id, or re-read get_accounts / get_institutions in a minute",
+	}, nil
+}
+
 // ---- update_transaction (write; registered only when gated on) ----
 
 type updateTransactionIn struct {
@@ -2237,6 +2294,11 @@ func buildMCPServer(api monarchAPI, auth authController, writes bool, logger *sl
 		Description: "Institution connection health — update_required=true explains stale account balances.",
 		Annotations: roAnnotations(),
 	}, wrap(limits, h.getInstitutions))
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "refresh_status",
+		Description: "Poll a force-refresh operation (from refresh_accounts): state, completed/total accounts, and done.",
+		Annotations: roAnnotations(),
+	}, wrap(limits, h.refreshStatus))
 
 	if writes {
 		mcp.AddTool(server, &mcp.Tool{
@@ -2339,6 +2401,11 @@ func buildMCPServer(api monarchAPI, auth authController, writes bool, logger *sl
 			Description: "Move money from a savings goal back to an account. Requires confirm:true. Returns the goal's new balance.",
 			Annotations: &mcp.ToolAnnotations{DestructiveHint: ptr(true), IdempotentHint: false, OpenWorldHint: ptr(false)},
 		}, wrap(limits, h.withdrawFromGoal))
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "refresh_accounts",
+			Description: "Ask Monarch to re-sync ALL accounts from their institutions (a remote action — it contacts your banks via the aggregator). Returns an operation_id; poll refresh_status or re-read get_accounts shortly.",
+			Annotations: &mcp.ToolAnnotations{DestructiveHint: ptr(false), IdempotentHint: false, OpenWorldHint: ptr(true)},
+		}, wrap(limits, h.refreshAccounts))
 	}
 	return server
 }

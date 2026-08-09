@@ -40,6 +40,7 @@ type fakeAPI struct {
 	tagDeletes      []string
 	merges          [][2]string
 	goalMoves       [][3]string
+	refreshed       bool
 }
 
 func (f *fakeAPI) ListAccounts(ctx context.Context) ([]*monarch.Account, error) {
@@ -290,6 +291,21 @@ func (f *fakeAPI) GetCreditScoreHistory(ctx context.Context) ([]*monarch.CreditS
 	return []*monarch.CreditScoreSnapshot{{ReportedDate: "2026-08-01", Score: 780}}, nil
 }
 
+func (f *fakeAPI) ForceRefreshAccounts(ctx context.Context) (string, error) {
+	if f.err != nil {
+		return "", f.err
+	}
+	f.refreshed = true
+	return "op-1", nil
+}
+
+func (f *fakeAPI) RefreshAccountsStatus(ctx context.Context, opID string) (*monarch.RefreshOperation, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return &monarch.RefreshOperation{ID: opID, State: "COMPLETED", Completed: 3, Total: 3}, nil
+}
+
 func (f *fakeAPI) ContributeToGoal(ctx context.Context, goalID, accountID string, amount float64) (*monarch.GoalMoveResult, error) {
 	if f.err != nil {
 		return nil, f.err
@@ -405,6 +421,7 @@ var readToolNames = []string{
 	"get_institutions", "get_merchants", "get_networth_history", "get_recurring",
 	"get_credit_score", "get_rules", "get_tags", "get_transaction",
 	"get_transaction_summary", "get_transactions", "monarch_login",
+	"refresh_status",
 }
 
 var _ = 0 // inventory below includes contribute/withdraw goal writes
@@ -413,9 +430,9 @@ var writeToolNames = []string{
 	"bulk_categorize", "bulk_update_transactions", "contribute_to_goal",
 	"create_category", "create_rule", "create_tag", "create_transaction",
 	"delete_category", "delete_rule", "delete_tag", "delete_transaction",
-	"merge_merchants", "set_budget_amount", "set_transaction_splits",
-	"update_category", "update_merchant", "update_rule", "update_tag",
-	"update_transaction", "withdraw_from_goal",
+	"merge_merchants", "refresh_accounts", "set_budget_amount",
+	"set_transaction_splits", "update_category", "update_merchant",
+	"update_rule", "update_tag", "update_transaction", "withdraw_from_goal",
 }
 
 func TestMCPToolInventoryReadOnly(t *testing.T) {
@@ -1122,5 +1139,42 @@ func TestMCPLoginDegradesGracefully(t *testing.T) {
 	}
 	if len(auth.calls) != 0 {
 		t.Errorf("no login attempt should occur when the form can't be shown: %v", auth.calls)
+	}
+}
+
+func TestMCPRefreshAccounts(t *testing.T) {
+	// Gated behind writes.
+	ro := &fakeAPI{}
+	cs := startMCP(t, ro, false, nil)
+	if _, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: "refresh_accounts", Arguments: map[string]any{}}); err == nil {
+		t.Error("refresh_accounts must be unregistered without writes")
+	}
+	// With writes: triggers, returns an operation id.
+	api := &fakeAPI{}
+	cs = startMCP(t, api, true, nil)
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: "refresh_accounts", Arguments: map[string]any{}})
+	if err != nil || res.IsError {
+		t.Fatalf("%v %s", err, resultText(t, res))
+	}
+	if !api.refreshed {
+		t.Error("refresh not triggered")
+	}
+	raw, _ := json.Marshal(res.StructuredContent)
+	var out refreshAccountsOut
+	json.Unmarshal(raw, &out)
+	if out.OperationID != "op-1" {
+		t.Errorf("out = %+v", out)
+	}
+	// refresh_status is a read (available without writes).
+	rs := startMCP(t, &fakeAPI{}, false, nil)
+	res, err = rs.CallTool(context.Background(), &mcp.CallToolParams{Name: "refresh_status", Arguments: map[string]any{"operation_id": "op-1"}})
+	if err != nil || res.IsError {
+		t.Fatalf("%v %s", err, resultText(t, res))
+	}
+	raw, _ = json.Marshal(res.StructuredContent)
+	var st refreshStatusOut
+	json.Unmarshal(raw, &st)
+	if !st.Done || st.Total != 3 {
+		t.Errorf("status = %+v", st)
 	}
 }

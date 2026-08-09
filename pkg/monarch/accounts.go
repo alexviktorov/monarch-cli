@@ -132,3 +132,40 @@ func (s *AccountsService) GetSnapshots(ctx context.Context, p SnapshotParams) ([
 	}
 	return snaps, nil
 }
+
+// RefreshOperation is the status of a force-refresh operation.
+type RefreshOperation struct {
+	ID        string `json:"id"`
+	State     string `json:"state"`
+	Completed int    `json:"completedAccountCount"`
+	Total     int    `json:"totalAccountCount"`
+}
+
+// Done reports whether every account in the operation has finished syncing.
+func (o RefreshOperation) Done() bool { return o.Total > 0 && o.Completed >= o.Total }
+
+const queryRefreshStatus = `query Common_ForceRefreshOperationQuery($id: ID!) {
+  forceRefreshOperation(id: $id) {
+    id
+    state
+    completedAccountCount
+    totalAccountCount
+  }
+}`
+
+// RefreshStatus polls a force-refresh operation (read-only).
+func (s *AccountsService) RefreshStatus(ctx context.Context, opID string) (*RefreshOperation, error) {
+	if opID == "" {
+		return nil, fmt.Errorf("monarch: RefreshStatus: operation id required")
+	}
+	var out struct {
+		ForceRefreshOperation *RefreshOperation `json:"forceRefreshOperation"`
+	}
+	if err := s.c.doGraphQL(ctx, "Common_ForceRefreshOperationQuery", queryRefreshStatus, map[string]any{"id": opID}, &out); err != nil {
+		return nil, err
+	}
+	if out.ForceRefreshOperation == nil {
+		return nil, fmt.Errorf("monarch: RefreshStatus: operation %s not found", opID)
+	}
+	return out.ForceRefreshOperation, nil
+}
