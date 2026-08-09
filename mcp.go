@@ -41,12 +41,15 @@ func cmdMCP(args []string) {
 	if writes {
 		opts = append(opts, monarch.WithWritesEnabled())
 	}
-	client, err := newClient(opts...)
+	// Tolerate no session at startup: the monarch_login tool can establish
+	// one interactively via elicitation, so a GUI host isn't dead-ended
+	// when the saved session has expired.
+	client, err := newClientMaybeLoggedIn(opts...)
 	if err != nil {
 		fatal("%v", err)
 	}
 
-	server := buildMCPServer(&liveAPI{c: client}, writes, logger, newToolLimits())
+	server := buildMCPServer(&liveAPI{c: client}, &liveAuth{c: client}, writes, logger, newToolLimits())
 	if writes {
 		logger.Warn("WRITE TOOLS ENABLED", "tools", "update_transaction")
 	}

@@ -135,3 +135,20 @@ func newClientForLogin() (*monarch.Client, error) {
 	}
 	return monarch.New(append([]monarch.Option{monarch.WithSessionStore(store)}, envOptions()...)...)
 }
+
+// newClientMaybeLoggedIn builds a client for the MCP server that MAY be
+// unauthenticated: unlike newClient it does not fail when no session
+// exists, because the server can recover one interactively via the
+// monarch_login elicitation tool. Reads/writes return ErrNotLoggedIn until
+// then.
+func newClientMaybeLoggedIn(extra ...monarch.Option) (*monarch.Client, error) {
+	extra = append(envOptions(), extra...)
+	if tok := os.Getenv("MONARCH_TOKEN"); tok != "" {
+		return monarch.New(append([]monarch.Option{monarch.WithToken(tok)}, extra...)...)
+	}
+	store, err := sessionStore()
+	if err != nil {
+		return nil, err
+	}
+	return monarch.New(append([]monarch.Option{monarch.WithSessionStore(store)}, extra...)...)
+}

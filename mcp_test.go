@@ -315,24 +315,63 @@ func (f *fakeAPI) DeleteRule(ctx context.Context, id string) error {
 }
 
 func startMCP(t *testing.T, api monarchAPI, writes bool, limits *toolLimits) *mcp.ClientSession {
+	// Default: an already-logged-in fake auth and a plain client.
+	return startMCPWith(t, api, &fakeAuth{email: "a@b.c"}, writes, limits, nil)
+}
+
+// startMCPWith allows injecting an authController and a client
+// ElicitationHandler (for the login flow).
+func startMCPWith(t *testing.T, api monarchAPI, auth authController, writes bool, limits *toolLimits,
+	elicit func(context.Context, *mcp.ElicitRequest) (*mcp.ElicitResult, error)) *mcp.ClientSession {
 	t.Helper()
 	if limits == nil {
 		limits = newToolLimits()
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	server := buildMCPServer(api, writes, logger, limits)
+	server := buildMCPServer(api, auth, writes, logger, limits)
 	st, ct := mcp.NewInMemoryTransports()
 	ctx := context.Background()
 	if _, err := server.Connect(ctx, st, nil); err != nil {
 		t.Fatal(err)
 	}
-	client := mcp.NewClient(&mcp.Implementation{Name: "probe", Version: "0"}, nil)
+	var copts *mcp.ClientOptions
+	if elicit != nil {
+		copts = &mcp.ClientOptions{ElicitationHandler: elicit}
+	}
+	client := mcp.NewClient(&mcp.Implementation{Name: "probe", Version: "0"}, copts)
 	cs, err := client.Connect(ctx, ct, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { cs.Close() })
 	return cs
+}
+
+// fakeAuth records login calls and lets a test script the challenge flow.
+type fakeAuth struct {
+	email     string   // current session email ("" = not logged in)
+	challenge error    // returned by Login to trigger MFA/OTP/captcha
+	calls     []string // "login", "mfa", "otp"
+}
+
+func (a *fakeAuth) SessionEmail() string { return a.email }
+func (a *fakeAuth) Login(ctx context.Context, email, password string) error {
+	a.calls = append(a.calls, "login")
+	if a.challenge != nil {
+		return a.challenge
+	}
+	a.email = email
+	return nil
+}
+func (a *fakeAuth) LoginWithMFA(ctx context.Context, email, password, code string) error {
+	a.calls = append(a.calls, "mfa")
+	a.email = email
+	return nil
+}
+func (a *fakeAuth) LoginWithEmailOTP(ctx context.Context, email, password, code string) error {
+	a.calls = append(a.calls, "otp")
+	a.email = email
+	return nil
 }
 
 func toolNames(t *testing.T, cs *mcp.ClientSession) []string {
@@ -365,7 +404,7 @@ var readToolNames = []string{
 	"get_cashflow_summary", "get_categories", "get_goals", "get_holdings",
 	"get_institutions", "get_merchants", "get_networth_history", "get_recurring",
 	"get_credit_score", "get_rules", "get_tags", "get_transaction",
-	"get_transaction_summary", "get_transactions",
+	"get_transaction_summary", "get_transactions", "monarch_login",
 }
 
 var _ = 0 // inventory below includes contribute/withdraw goal writes
@@ -1013,5 +1052,75 @@ func TestMCPGoalMovesRequireConfirm(t *testing.T) {
 	json.Unmarshal(raw, &out)
 	if out.CurrentBalance != 150 {
 		t.Errorf("out = %+v, want balance echo 150", out)
+	}
+}
+
+// scriptElicit returns an ElicitationHandler that answers each single-field
+// form with the value keyed by that field name.
+func scriptElicit(values map[string]string) func(context.Context, *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
+	return func(_ context.Context, req *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
+		schema, _ := req.Params.RequestedSchema.(map[string]any)
+		props, _ := schema["properties"].(map[string]any)
+		content := map[string]any{}
+		for field := range props {
+			if v, ok := values[field]; ok {
+				content[field] = v
+			}
+		}
+		return &mcp.ElicitResult{Action: "accept", Content: content}, nil
+	}
+}
+
+func loginResult(t *testing.T, cs *mcp.ClientSession) loginOut {
+	t.Helper()
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: "monarch_login", Arguments: map[string]any{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IsError {
+		t.Fatalf("login tool error: %s", resultText(t, res))
+	}
+	raw, _ := json.Marshal(res.StructuredContent)
+	var out loginOut
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+func TestMCPLoginAlreadyLoggedIn(t *testing.T) {
+	cs := startMCPWith(t, &fakeAPI{}, &fakeAuth{email: "me@x.co"}, false, nil, nil)
+	out := loginResult(t, cs)
+	if !out.LoggedIn || out.Email != "me@x.co" {
+		t.Errorf("out = %+v", out)
+	}
+}
+
+func TestMCPLoginNoElicitationCapability(t *testing.T) {
+	// Not logged in, client advertises no elicitation → graceful fallback.
+	cs := startMCPWith(t, &fakeAPI{}, &fakeAuth{}, false, nil, nil)
+	out := loginResult(t, cs)
+	if out.LoggedIn || !strings.Contains(out.Detail, "terminal") {
+		t.Errorf("out = %+v, want fallback-to-terminal", out)
+	}
+}
+
+func TestMCPLoginDegradesGracefully(t *testing.T) {
+	// The current protocol version disallows server-initiated elicitation
+	// during a tool call, so even with an elicitation-capable client the
+	// login tool must fall back to terminal guidance — never a hard error,
+	// and never a spurious "logged in".
+	auth := &fakeAuth{}
+	cs := startMCPWith(t, &fakeAPI{}, auth, false, nil,
+		scriptElicit(map[string]string{"email": "me@x.co", "password": "pw"}))
+	out := loginResult(t, cs) // asserts no IsError
+	if out.LoggedIn {
+		t.Errorf("must not report logged-in when elicitation is unavailable: %+v", out)
+	}
+	if !strings.Contains(out.Detail, "terminal") {
+		t.Errorf("detail = %q, want terminal guidance", out.Detail)
+	}
+	if len(auth.calls) != 0 {
+		t.Errorf("no login attempt should occur when the form can't be shown: %v", auth.calls)
 	}
 }

@@ -73,6 +73,36 @@ type txQuery struct {
 	NeedsReview          *bool
 }
 
+// authController is the narrow login surface the monarch_login tool needs;
+// tests substitute a fake.
+type authController interface {
+	SessionEmail() string // "" when not logged in
+	Login(ctx context.Context, email, password string) error
+	LoginWithMFA(ctx context.Context, email, password, code string) error
+	LoginWithEmailOTP(ctx context.Context, email, password, code string) error
+}
+
+// liveAuth adapts *monarch.Client. Auth.Login* persist to the session
+// store and populate the client's session in place, so the read/write
+// tools sharing this client work immediately after a successful login.
+type liveAuth struct{ c *monarch.Client }
+
+func (a *liveAuth) SessionEmail() string {
+	if s := a.c.Session(); s != nil {
+		return s.Email
+	}
+	return ""
+}
+func (a *liveAuth) Login(ctx context.Context, email, password string) error {
+	return a.c.Auth.Login(ctx, email, password)
+}
+func (a *liveAuth) LoginWithMFA(ctx context.Context, email, password, code string) error {
+	return a.c.Auth.LoginWithMFA(ctx, email, password, code)
+}
+func (a *liveAuth) LoginWithEmailOTP(ctx context.Context, email, password, code string) error {
+	return a.c.Auth.LoginWithEmailOTP(ctx, email, password, code)
+}
+
 // liveAPI adapts *monarch.Client to monarchAPI.
 type liveAPI struct{ c *monarch.Client }
 
@@ -302,6 +332,7 @@ func parseToolDate(s, name string) (time.Time, error) {
 
 type toolHandlers struct {
 	api    monarchAPI
+	auth   authController
 	writes bool
 	logger *slog.Logger
 }
@@ -784,6 +815,85 @@ func (h *toolHandlers) getNetworth(ctx context.Context, _ *mcp.CallToolRequest, 
 		})
 	}
 	return nil, out, nil
+}
+
+// ---- monarch_login (interactive; always registered) ----
+//
+// Recovers a session without a terminal, for GUI MCP hosts. Credentials
+// are collected via MCP elicitation (a client-side form), so the password
+// travels client-UI -> server and never appears in tool-call arguments or
+// the model's context.
+
+type loginOut struct {
+	LoggedIn bool   `json:"logged_in"`
+	Email    string `json:"email,omitempty"`
+	Detail   string `json:"detail,omitempty"`
+}
+
+// The current MCP protocol version permits only ONE server-initiated
+// elicitation per tool call (SEP-2322), so credentials — including an
+// optional 2FA/OTP code — are collected in a single form. When MFA is
+// required but no code was supplied, the user re-runs the tool and fills
+// the code field.
+func (h *toolHandlers) login(ctx context.Context, req *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, loginOut, error) {
+	if email := h.auth.SessionEmail(); email != "" {
+		return nil, loginOut{LoggedIn: true, Email: email, Detail: "already logged in"}, nil
+	}
+	if caps := req.ClientCapabilities(); caps == nil || caps.Elicitation == nil {
+		return nil, loginOut{Detail: "this MCP client does not support interactive login — run `monarch login` in a terminal, then reconnect"}, nil
+	}
+
+	schema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"email":    map[string]any{"type": "string", "title": "Monarch email"},
+			"password": map[string]any{"type": "string", "title": "Password", "format": "password"},
+			"two_factor_code": map[string]any{
+				"type": "string", "title": "Two-factor code (only if enabled; leave blank otherwise)",
+			},
+		},
+		"required": []string{"email", "password"},
+	}
+	res, err := req.Session.Elicit(ctx, &mcp.ElicitParams{
+		Mode: "form", Message: "Log in to Monarch Money", RequestedSchema: schema,
+	})
+	if err != nil {
+		// Some protocol versions disallow server-initiated elicitation
+		// during a tool call (SEP-2322); degrade to terminal guidance
+		// instead of failing.
+		return nil, loginOut{Detail: "interactive login isn't available in this client — run `monarch login` in a terminal, then reconnect"}, nil
+	}
+	if res.Action != "accept" {
+		return nil, loginOut{Detail: "login cancelled"}, nil
+	}
+	email, _ := res.Content["email"].(string)
+	password, _ := res.Content["password"].(string)
+	code, _ := res.Content["two_factor_code"].(string)
+	if email == "" || password == "" {
+		return nil, loginOut{Detail: "email and password are required"}, nil
+	}
+
+	err = h.auth.Login(ctx, email, password)
+	switch {
+	case errors.Is(err, monarch.ErrMFARequired):
+		if code == "" {
+			return nil, loginOut{Detail: "two-factor required — run monarch_login again and enter your code in the two_factor_code field"}, nil
+		}
+		err = h.auth.LoginWithMFA(ctx, email, password, code)
+	case errors.Is(err, monarch.ErrEmailOTPRequired):
+		if code == "" {
+			return nil, loginOut{Detail: "an email code was sent — run monarch_login again and enter it in the two_factor_code field"}, nil
+		}
+		err = h.auth.LoginWithEmailOTP(ctx, email, password, code)
+	case errors.Is(err, monarch.ErrCaptchaRequired):
+		return nil, loginOut{Detail: "Cloudflare requires a browser check — log in at app.monarch.com once, then retry"}, nil
+	}
+	if err != nil {
+		return nil, loginOut{Detail: redactErr(err).Error()}, nil
+	}
+	// Field-names-only log: never the email or password.
+	h.logger.Info("session established via elicitation login")
+	return nil, loginOut{LoggedIn: true, Email: h.auth.SessionEmail(), Detail: "logged in"}, nil
 }
 
 // ---- check_session ----
@@ -2022,12 +2132,20 @@ func roAnnotations() *mcp.ToolAnnotations {
 	return &mcp.ToolAnnotations{ReadOnlyHint: true, IdempotentHint: true, OpenWorldHint: ptr(false)}
 }
 
-func buildMCPServer(api monarchAPI, writes bool, logger *slog.Logger, limits *toolLimits) *mcp.Server {
+func buildMCPServer(api monarchAPI, auth authController, writes bool, logger *slog.Logger, limits *toolLimits) *mcp.Server {
 	server := mcp.NewServer(
 		&mcp.Implementation{Name: "monarch", Version: appVersion},
 		&mcp.ServerOptions{Instructions: serverInstructions, Logger: logger},
 	)
-	h := &toolHandlers{api: api, writes: writes, logger: logger}
+	h := &toolHandlers{api: api, auth: auth, writes: writes, logger: logger}
+
+	// monarch_login is always available (session recovery is not a
+	// financial write and must work in read-only mode too).
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "monarch_login",
+		Description: "Establish a Monarch session interactively when not logged in (or the session expired). Prompts for email/password (and MFA) via the client's elicitation UI — credentials never enter tool arguments. Returns logged_in and email.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, IdempotentHint: true, OpenWorldHint: ptr(false)},
+	}, wrap(limits, h.login))
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "get_accounts",
