@@ -35,7 +35,10 @@ monarch login
 On macOS the session token is stored in your **login Keychain** (service
 `monarch-cli`), encrypted at rest; an existing `~/.config/monarch/session.json`
 from older versions is migrated in automatically. Elsewhere (or with
-`MONARCH_SESSION_FILE=/path`) it's a 0600 JSON file.
+`MONARCH_SESSION_FILE=/path`) it's a 0600 JSON file. Honest caveat: because
+the item is written via Apple's `security` tool, any process running *as you*
+can read it back the same way — Keychain protects the token at rest and while
+the keychain is locked, not against same-user malware.
 
 Alternatives:
 

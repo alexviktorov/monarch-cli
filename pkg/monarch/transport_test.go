@@ -178,6 +178,24 @@ func TestGraphQLContextCancelDuringBackoff(t *testing.T) {
 	}
 }
 
+func TestWithTokenMintsDeviceUUID(t *testing.T) {
+	// A WithToken session has no stored device identity; Monarch expects a
+	// device-uuid on every request, so New must mint a stable one.
+	var got []string
+	c := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = append(got, r.Header.Get("device-uuid"))
+		w.Write([]byte(`{"data":{}}`))
+	}), WithToken("tok"))
+	for range 2 {
+		if err := c.doGraphQL(context.Background(), "Op", "query Op { x }", nil, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(got) != 2 || got[0] == "" || got[0] != got[1] {
+		t.Errorf("device-uuid headers = %v, want the same non-empty value on every request", got)
+	}
+}
+
 func TestGraphQLRequiresToken(t *testing.T) {
 	var calls atomic.Int32
 	c := testClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -202,8 +220,8 @@ func TestAPIErrorHidesBody(t *testing.T) {
 	if !errors.As(err, &apiErr) {
 		t.Fatalf("err = %v, want *APIError", err)
 	}
-	if apiErr.Body == "" {
-		t.Error("Body should retain truncated payload for inspection")
+	if apiErr.DebugBody() == "" {
+		t.Error("DebugBody should retain the truncated payload for inspection")
 	}
 	if msg := err.Error(); msg != "monarch: Op: HTTP 400" {
 		t.Errorf("Error() = %q — raw body must not leak into the message", msg)

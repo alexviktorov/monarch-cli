@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"syscall"
 	"time"
 )
 
@@ -37,13 +39,17 @@ type fileStore struct{ path string }
 func NewFileStore(path string) SessionStore { return &fileStore{path: path} }
 
 func (f *fileStore) Load() (*Session, error) {
-	if err := refuseSymlink(f.path); err != nil {
-		return nil, err
-	}
-	data, err := os.ReadFile(f.path)
+	// O_NOFOLLOW makes the symlink refusal atomic with the open — no
+	// check-then-read window.
+	fh, err := os.OpenFile(f.path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, ErrNoSession
 	}
+	if err != nil {
+		return nil, fmt.Errorf("monarch: open session file %s: %w", f.path, err)
+	}
+	defer fh.Close()
+	data, err := io.ReadAll(io.LimitReader(fh, 1<<20))
 	if err != nil {
 		return nil, err
 	}
@@ -62,6 +68,11 @@ func (f *fileStore) Save(s *Session) error {
 		return err
 	}
 	dir := filepath.Dir(f.path)
+	// Also refuse a symlinked immediate parent (e.g. ~/.config/monarch
+	// pointing into an attacker-owned directory).
+	if err := refuseSymlink(dir); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}

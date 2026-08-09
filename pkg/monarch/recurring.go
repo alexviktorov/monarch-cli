@@ -8,11 +8,11 @@ import (
 type RecurringService struct{ c *Client }
 
 type RecurringItem struct {
-	Merchant  *MerchantRef
-	Amount    float64
-	Frequency string
-	NextDate  Date
-	Category  *CategoryRef
+	Merchant  *MerchantRef `json:"merchant"`
+	Amount    float64      `json:"amount"`
+	Frequency string       `json:"frequency"`
+	NextDate  Date         `json:"nextDate"`
+	Category  *CategoryRef `json:"category"`
 }
 
 const queryRecurring = `query Web_GetUpcomingRecurringTransactionItems($startDate: Date!, $endDate: Date!) {

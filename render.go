@@ -75,6 +75,11 @@ func renderBudget(w io.Writer, budgets []*monarch.BudgetRow, monthLabel string) 
 	t := newTable(w, "CATEGORY", "BUDGET", "SPENT", "REMAINING")
 	var totBudget, totSpent float64
 	for _, b := range budgets {
+		// Income rows would corrupt the spend totals (their actualAmount
+		// is money received); the budget table is about spending.
+		if b.GroupType == "income" {
+			continue
+		}
 		name := b.CategoryID
 		if b.Category != nil {
 			name = b.Category.Name

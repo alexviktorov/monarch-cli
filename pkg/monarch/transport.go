@@ -165,7 +165,7 @@ func parseRetryAfter(h http.Header) time.Duration {
 }
 
 func apiError(operation string, status int, body []byte) error {
-	e := &APIError{StatusCode: status, Operation: operation, Body: string(body[:min(len(body), errBodyKeep)])}
+	e := &APIError{StatusCode: status, Operation: operation, body: string(body[:min(len(body), errBodyKeep)])}
 	switch status {
 	case http.StatusUnauthorized, http.StatusForbidden:
 		e.wrapped = ErrSessionExpired

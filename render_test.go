@@ -89,8 +89,12 @@ func TestRenderSummary(t *testing.T) {
 func TestRenderBudget(t *testing.T) {
 	rows := []*monarch.BudgetRow{
 		{CategoryID: "c1", Category: &monarch.CategoryRef{ID: "c1", Name: "Groceries"},
-			Amount: 600, Spent: 420.5, Remaining: 179.5},
+			GroupType: "expense", Amount: 600, Spent: 420.5, Remaining: 179.5},
 		{CategoryID: "c2", Amount: 100, Spent: 0, Remaining: 100},
+		// Income rows are excluded from the table and totals — the golden
+		// file proves it: this row must leave the output unchanged.
+		{CategoryID: "c9", Category: &monarch.CategoryRef{ID: "c9", Name: "Paycheck"},
+			GroupType: "income", Amount: 5000, Spent: -5000, Remaining: 0},
 	}
 	var buf bytes.Buffer
 	renderBudget(&buf, rows, "August 2026")

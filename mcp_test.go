@@ -19,6 +19,7 @@ import (
 // fakeAPI implements monarchAPI for protocol tests.
 type fakeAPI struct {
 	err       error // returned by every read when set
+	tagErr    error // returned by SetTransactionTags only
 	updates   []monarch.TransactionUpdate
 	updateIDs []string
 	tagSets   [][]string
@@ -83,6 +84,9 @@ func (f *fakeAPI) UpdateTransaction(ctx context.Context, id string, p monarch.Tr
 }
 
 func (f *fakeAPI) SetTransactionTags(ctx context.Context, id string, tagIDs []string) error {
+	if f.tagErr != nil {
+		return f.tagErr
+	}
 	f.tagSetIDs = append(f.tagSetIDs, id)
 	f.tagSets = append(f.tagSets, tagIDs)
 	return f.err
@@ -311,6 +315,32 @@ func TestMCPUpdateTransaction(t *testing.T) {
 	want := []string{"category", "tags"}
 	if out.ID != "t1" || len(out.Updated) != 2 || out.Updated[0] != want[0] || out.Updated[1] != want[1] {
 		t.Errorf("out = %+v, want updated %v", out, want)
+	}
+}
+
+func TestMCPUpdateTransactionPartialFailure(t *testing.T) {
+	api := &fakeAPI{tagErr: errors.New("tag id not found")}
+	cs := startMCP(t, api, true, nil)
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "update_transaction",
+		Arguments: map[string]any{
+			"transaction_id": "t1",
+			"category_id":    "c2",
+			"tag_ids":        []string{"bad"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError {
+		t.Fatal("partial failure must surface as a tool error")
+	}
+	txt := resultText(t, res)
+	if !strings.Contains(txt, "PARTIAL UPDATE") || !strings.Contains(txt, "category") {
+		t.Errorf("partial-failure text must state what was applied: %q", txt)
+	}
+	if len(api.updates) != 1 {
+		t.Error("category write should have been attempted and recorded")
 	}
 }
 

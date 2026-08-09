@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"testing"
 )
@@ -101,6 +102,23 @@ func TestUpdateTransactionPayloadError(t *testing.T) {
 	notes := "x"
 	if _, err := c.Transactions.Update(context.Background(), "t1", TransactionUpdate{Notes: &notes}); err == nil {
 		t.Error("payload errors must surface as an error")
+	}
+}
+
+func TestUpdateTransactionPayloadErrorObjectShape(t *testing.T) {
+	// Monarch returns mutation payload errors as a single PayloadError
+	// OBJECT (not an array) — the shape that actually occurs on failures.
+	c := writesClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"data":{"updateTransaction":{"transaction":null,
+			"errors":{"message":"Category not found","code":"NOT_FOUND","fieldErrors":[]}}}}`))
+	}))
+	notes := "x"
+	_, err := c.Transactions.Update(context.Background(), "t1", TransactionUpdate{Notes: &notes})
+	if err == nil {
+		t.Fatal("object-shaped payload error must surface as an error")
+	}
+	if got := err.Error(); !strings.Contains(got, "Category not found") || !strings.Contains(got, "NOT_FOUND") {
+		t.Errorf("err = %q, want the server's message and code", got)
 	}
 }
 

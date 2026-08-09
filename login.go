@@ -15,10 +15,14 @@ import (
 	"monarch-cli/pkg/monarch"
 )
 
+// stdinReader is shared across all prompts: a fresh bufio.Reader per call
+// would discard lines it had buffered but not returned, silently breaking
+// piped/scripted logins (bufio reads up to 4KB at a time, not one line).
+var stdinReader = bufio.NewReader(os.Stdin)
+
 func readLine(prompt string) string {
 	fmt.Print(prompt)
-	r := bufio.NewReader(os.Stdin)
-	line, _ := r.ReadString('\n')
+	line, _ := stdinReader.ReadString('\n')
 	return strings.TrimSpace(line)
 }
 
@@ -64,6 +68,9 @@ func cmdLogin(args []string) {
 			fatal("%v", err)
 		}
 	}
+	if password == "" {
+		fatal("empty password (stdin exhausted?)")
+	}
 
 	if *useTOTP {
 		secret := os.Getenv("MONARCH_TOTP_SECRET")
@@ -79,9 +86,15 @@ func cmdLogin(args []string) {
 		switch {
 		case errors.Is(err, monarch.ErrMFARequired):
 			code := readLine("Two-factor code: ")
+			if code == "" {
+				fatal("empty two-factor code (stdin exhausted?)")
+			}
 			err = client.Auth.LoginWithMFA(ctx, e, password, code)
 		case errors.Is(err, monarch.ErrEmailOTPRequired):
 			code := readLine("Code sent to your email: ")
+			if code == "" {
+				fatal("empty email code (stdin exhausted?)")
+			}
 			err = client.Auth.LoginWithEmailOTP(ctx, e, password, code)
 		}
 	}

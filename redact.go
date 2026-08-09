@@ -16,9 +16,17 @@ import (
 // responses. The library contract already keeps tokens and raw bodies out
 // of error strings; this is a regex backstop, plus a fixed, actionable
 // message for auth failures (never anything that could echo a credential).
-// The optional `token\s+` swallows header schemes ("Authorization: Token
-// <value>", "Bearer <value>") so the value itself is what gets redacted.
-var redactPattern = regexp.MustCompile(`(?i)\b(authorization|cookie|password|secret|token)\b[=:\s]+(?:(?:token|bearer)\s+)?\S+`)
+// Three shapes are covered: keyworded assignments tolerant of JSON/quote
+// punctuation (`token=x`, `"token":"x"`), keyword-free header schemes
+// (`Bearer <opaque>`), and bare JWTs. Over-redaction is fine; leaks are not.
+var redactPatterns = []struct {
+	re   *regexp.Regexp
+	repl string
+}{
+	{regexp.MustCompile(`(?i)\b(authorization|cookie|password|secret|token|api[_-]?key)\b["']?\s*[=:]\s*["']?(?:(?:token|bearer)\s+)?[^\s"',}]+`), "$1 [redacted]"},
+	{regexp.MustCompile(`(?i)\b(bearer|token)\s+[A-Za-z0-9._~+/=-]{12,}`), "$1 [redacted]"},
+	{regexp.MustCompile(`\beyJ[A-Za-z0-9._-]{20,}`), "[redacted]"},
+}
 
 func redactErr(err error) error {
 	if err == nil {
@@ -27,7 +35,11 @@ func redactErr(err error) error {
 	if errors.Is(err, monarch.ErrSessionExpired) || errors.Is(err, monarch.ErrNotLoggedIn) || errors.Is(err, monarch.ErrNoSession) {
 		return errors.New("Monarch session expired or missing. Run `monarch login` in a terminal, then retry.")
 	}
-	return errors.New(redactPattern.ReplaceAllString(err.Error(), "$1 [redacted]"))
+	msg := err.Error()
+	for _, p := range redactPatterns {
+		msg = p.re.ReplaceAllString(msg, p.repl)
+	}
+	return errors.New(msg)
 }
 
 // tokenBucket is a tiny stdlib rate limiter (no x/time dependency).

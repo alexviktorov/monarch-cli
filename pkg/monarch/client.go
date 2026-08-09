@@ -88,6 +88,11 @@ func New(opts ...Option) (*Client, error) {
 			return nil, err
 		}
 	}
+	// Monarch expects a device-uuid on every request; a WithToken session
+	// (or an old stored one) may lack it, so mint a stable one now.
+	if c.session != nil && c.session.DeviceUUID == "" {
+		c.session.DeviceUUID = newUUIDv4()
+	}
 	c.Auth = &AuthService{c: c}
 	c.Accounts = &AccountsService{c: c}
 	c.Transactions = &TransactionsService{c: c}

@@ -56,11 +56,13 @@ type SnapshotParams struct {
 	Timeframe string // "month" or "year"
 }
 
-// AccountSnapshot is one (period, account-type) aggregate balance.
+// AccountSnapshot is one (period, account-type) aggregate balance. The
+// marshal names (type/totalValue) match the pre-rewrite --json contract;
+// the wire response's accountType/sum are mapped in GetSnapshots.
 type AccountSnapshot struct {
 	Month      string  `json:"month"`
-	Type       string  `json:"accountType"`
-	TotalValue float64 `json:"sum"`
+	Type       string  `json:"type"`
+	TotalValue float64 `json:"totalValue"`
 }
 
 const queryGetSnapshots = `query GetSnapshotsByAccountType($startDate: Date!, $timeframe: Timeframe!) {
@@ -80,10 +82,18 @@ func (s *AccountsService) GetSnapshots(ctx context.Context, p SnapshotParams) ([
 		"timeframe": p.Timeframe,
 	}
 	var out struct {
-		Snapshots []*AccountSnapshot `json:"snapshotsByAccountType"`
+		Snapshots []struct {
+			Month       string  `json:"month"`
+			AccountType string  `json:"accountType"`
+			Sum         float64 `json:"sum"`
+		} `json:"snapshotsByAccountType"`
 	}
 	if err := s.c.doGraphQL(ctx, "GetSnapshotsByAccountType", queryGetSnapshots, vars, &out); err != nil {
 		return nil, err
 	}
-	return out.Snapshots, nil
+	snaps := make([]*AccountSnapshot, 0, len(out.Snapshots))
+	for _, sn := range out.Snapshots {
+		snaps = append(snaps, &AccountSnapshot{Month: sn.Month, Type: sn.AccountType, TotalValue: sn.Sum})
+	}
+	return snaps, nil
 }

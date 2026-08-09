@@ -21,12 +21,13 @@ var (
 // APIError is a non-2xx HTTP response from the Monarch API.
 //
 // Error() deliberately reports only the operation and status code: raw server
-// output must never reach logs or terminals. The truncated Body is retained
-// for programmatic inspection only.
+// output must never reach logs or terminals. The truncated body is unexported
+// so no format verb (%+v, %#v) or reflective logger can surface it by
+// accident; call DebugBody to opt in.
 type APIError struct {
 	StatusCode int
 	Operation  string
-	Body       string // first 500 bytes of the response, not part of Error()
+	body       string
 	wrapped    error
 }
 
@@ -35,6 +36,10 @@ func (e *APIError) Error() string {
 }
 
 func (e *APIError) Unwrap() error { return e.wrapped }
+
+// DebugBody returns the first 500 bytes of the response body for
+// programmatic inspection. Do not log it.
+func (e *APIError) DebugBody() string { return e.body }
 
 // GraphQLError is an HTTP 200 response carrying a non-empty errors array.
 type GraphQLError struct {

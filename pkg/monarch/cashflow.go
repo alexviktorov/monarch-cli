@@ -13,26 +13,26 @@ type CashflowParams struct {
 }
 
 type CashflowSummary struct {
-	Income      float64
-	Expense     float64 // positive for display (sumExpense arrives negative)
-	Savings     float64
-	SavingsRate float64
+	Income      float64 `json:"income"`
+	Expense     float64 `json:"expense"` // positive for display (sumExpense arrives negative)
+	Savings     float64 `json:"savings"`
+	SavingsRate float64 `json:"savingsRate"`
 }
 
 type CashflowCategory struct {
-	Category *CategoryRef
-	Amount   float64 // raw signed sum; negative = spending
+	Category *CategoryRef `json:"category"`
+	Amount   float64      `json:"amount"` // raw signed sum; negative = spending
 }
 
 type CashflowMerchant struct {
-	Merchant *MerchantRef
-	Amount   float64
+	Merchant *MerchantRef `json:"merchant"`
+	Amount   float64      `json:"amount"`
 }
 
 type Cashflow struct {
-	Summary    *CashflowSummary
-	ByCategory []*CashflowCategory
-	ByMerchant []*CashflowMerchant
+	Summary    *CashflowSummary    `json:"summary"`
+	ByCategory []*CashflowCategory `json:"byCategory"`
+	ByMerchant []*CashflowMerchant `json:"byMerchant"`
 }
 
 const queryCashflow = `query Web_GetCashFlowPage($filters: TransactionFilterInput) {

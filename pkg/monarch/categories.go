@@ -18,7 +18,7 @@ type Category struct {
 	Group      *CategoryGroup `json:"group"`
 }
 
-const queryGetCategories = `query GetTransactionCategories {
+const queryGetCategories = `query GetCategories {
   categories {
     id
     name
@@ -32,7 +32,7 @@ func (s *CategoriesService) List(ctx context.Context) ([]*Category, error) {
 	var out struct {
 		Categories []*Category `json:"categories"`
 	}
-	if err := s.c.doGraphQL(ctx, "GetTransactionCategories", queryGetCategories, nil, &out); err != nil {
+	if err := s.c.doGraphQL(ctx, "GetCategories", queryGetCategories, nil, &out); err != nil {
 		return nil, err
 	}
 	return out.Categories, nil

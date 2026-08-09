@@ -67,10 +67,15 @@ transport only — its 2026 HIGH advisories were all HTTP-transport bugs).
 - The server never reports a token lifetime; we store no expiry and treat a
   real 401 as the truth (upstream libs fabricate login+24h — don't).
 - Quirks pinned by tests: `aggregates` is an ARRAY (`GetTransactionsPage`);
-  budget `Spent = -actualAmount`; cashflow `Expense = -sumExpense` and its
-  filters MUST include empty `search`/`categories`/`accounts`/`tags` keys;
-  recurring items flatten `stream{frequency merchant}`; transaction min/max
-  amount bounds are client-side on absolute value.
+  the transactions `filters` variable must be sent even when empty; budget
+  `Spent = -actualAmount` — only meaningful for expense rows, so income-group
+  rows (BudgetRow.GroupType == "income") are excluded from spend totals;
+  cashflow `Expense = -sumExpense` and its filters MUST include empty
+  `search`/`categories`/`accounts`/`tags` keys; recurring items flatten
+  `stream{frequency merchant}`; transaction min/max amount bounds are
+  client-side on absolute value (post-pagination — TransactionList.Fetched
+  records the pre-filter page size); mutation payload `errors` can be an
+  object OR an array (payloadErrors handles both).
 - Sign convention: expenses negative, income positive. `monthlyEstimate` and
   the cashflow/recurring renderers rely on it.
 

@@ -8,18 +8,22 @@ import (
 type BudgetsService struct{ c *Client }
 
 type BudgetRow struct {
-	CategoryID string
-	Category   *CategoryRef
-	Month      string
-	Amount     float64 // planned budget for the month
-	Spent      float64 // positive spend (actualAmount is sign-convention negative)
-	Remaining  float64
+	CategoryID string       `json:"categoryId"`
+	Category   *CategoryRef `json:"category"`
+	// GroupType is the category group's type ("income" or "expense").
+	// The Spent negation below is only meaningful for expense rows;
+	// callers aggregating spend must exclude income rows.
+	GroupType string  `json:"groupType"`
+	Month     string  `json:"month"`
+	Amount    float64 `json:"amount"` // planned budget for the month
+	Spent     float64 `json:"spent"`  // positive spend (actualAmount is sign-convention negative)
+	Remaining float64 `json:"remaining"`
 }
 
 const queryBudgets = `query Common_GetJointPlanningData($startDate: Date!, $endDate: Date!) {
   budgetData(startMonth: $startDate, endMonth: $endDate) {
     monthlyAmountsByCategory {
-      category { id name }
+      category { id name group { type } }
       monthlyAmounts {
         month
         plannedCashFlowAmount
@@ -38,7 +42,13 @@ func (s *BudgetsService) List(ctx context.Context, start, end time.Time) ([]*Bud
 	var out struct {
 		BudgetData struct {
 			MonthlyAmountsByCategory []struct {
-				Category       *CategoryRef `json:"category"`
+				Category *struct {
+					ID    string `json:"id"`
+					Name  string `json:"name"`
+					Group *struct {
+						Type string `json:"type"`
+					} `json:"group"`
+				} `json:"category"`
 				MonthlyAmounts []struct {
 					Month                 string  `json:"month"`
 					PlannedCashFlowAmount float64 `json:"plannedCashFlowAmount"`
@@ -55,7 +65,6 @@ func (s *BudgetsService) List(ctx context.Context, start, end time.Time) ([]*Bud
 	for _, byCat := range out.BudgetData.MonthlyAmountsByCategory {
 		for _, m := range byCat.MonthlyAmounts {
 			row := &BudgetRow{
-				Category:  byCat.Category,
 				Month:     m.Month,
 				Amount:    m.PlannedCashFlowAmount,
 				Spent:     -m.ActualAmount,
@@ -63,6 +72,10 @@ func (s *BudgetsService) List(ctx context.Context, start, end time.Time) ([]*Bud
 			}
 			if byCat.Category != nil {
 				row.CategoryID = byCat.Category.ID
+				row.Category = &CategoryRef{ID: byCat.Category.ID, Name: byCat.Category.Name}
+				if byCat.Category.Group != nil {
+					row.GroupType = byCat.Category.Group.Type
+				}
 			}
 			rows = append(rows, row)
 		}

@@ -22,10 +22,15 @@ type Transaction struct {
 }
 
 type TransactionList struct {
-	Transactions []*Transaction
-	TotalCount   int
-	HasMore      bool
-	NextOffset   int
+	Transactions []*Transaction `json:"transactions"`
+	TotalCount   int            `json:"totalCount"`
+	// Fetched is the number of rows the server returned for this page,
+	// BEFORE the client-side min/max amount filtering. When it differs
+	// from len(Transactions), an amount filter dropped rows from this
+	// page only — not from the whole result set.
+	Fetched    int  `json:"fetched"`
+	HasMore    bool `json:"hasMore"`
+	NextOffset int  `json:"nextOffset"`
 }
 
 const queryGetTransactionsList = `query GetTransactionsList($offset: Int, $limit: Int, $filters: TransactionFilterInput, $orderBy: TransactionOrdering) {
@@ -101,13 +106,14 @@ func (q *TransactionQuery) Execute(ctx context.Context) (*TransactionList, error
 	if len(q.categories) > 0 {
 		filters["categories"] = q.categories
 	}
+	// The filters object is always sent, even when empty — the API expects
+	// the variable to be present (GetSummary and every known-working client
+	// do the same).
 	vars := map[string]any{
 		"offset":  q.offset,
 		"limit":   q.limit,
 		"orderBy": "date",
-	}
-	if len(filters) > 0 {
-		vars["filters"] = filters
+		"filters": filters,
 	}
 	var out struct {
 		AllTransactions struct {
@@ -119,6 +125,7 @@ func (q *TransactionQuery) Execute(ctx context.Context) (*TransactionList, error
 		return nil, err
 	}
 	results := out.AllTransactions.Results
+	fetched := len(results)
 	if q.minAmt != nil || q.maxAmt != nil {
 		kept := make([]*Transaction, 0, len(results))
 		for _, tx := range results {
@@ -137,6 +144,7 @@ func (q *TransactionQuery) Execute(ctx context.Context) (*TransactionList, error
 	return &TransactionList{
 		Transactions: results,
 		TotalCount:   out.AllTransactions.TotalCount,
+		Fetched:      fetched,
 		HasMore:      next < out.AllTransactions.TotalCount,
 		NextOffset:   next,
 	}, nil

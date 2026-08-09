@@ -1,7 +1,9 @@
 package monarch
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -29,12 +31,50 @@ func (c *Client) requireWrites() error {
 
 type payloadError struct {
 	Message string `json:"message"`
+	Code    string `json:"code"`
 }
 
-func payloadErrs(operation string, errs []payloadError) error {
+// payloadErrors tolerates both shapes Monarch uses for mutation payload
+// errors: an array on some payloads, a single PayloadError object on others
+// (the object form is what updateTransaction actually returns on failure).
+type payloadErrors []payloadError
+
+func (p *payloadErrors) UnmarshalJSON(b []byte) error {
+	trimmed := bytes.TrimSpace(b)
+	if len(trimmed) == 0 || string(trimmed) == "null" {
+		*p = nil
+		return nil
+	}
+	switch trimmed[0] {
+	case '[':
+		var arr []payloadError
+		if err := json.Unmarshal(trimmed, &arr); err != nil {
+			return err
+		}
+		*p = arr
+	case '{':
+		var one payloadError
+		if err := json.Unmarshal(trimmed, &one); err != nil {
+			return err
+		}
+		if one == (payloadError{}) {
+			*p = nil
+		} else {
+			*p = payloadErrors{one}
+		}
+	default:
+		return fmt.Errorf("monarch: unexpected payload errors shape %q", trimmed[0])
+	}
+	return nil
+}
+
+func payloadErrs(operation string, errs payloadErrors) error {
 	msgs := make([]string, len(errs))
 	for i, e := range errs {
 		msgs[i] = e.Message
+		if e.Code != "" {
+			msgs[i] += " (" + e.Code + ")"
+		}
 	}
 	return fmt.Errorf("monarch: %s: %s", operation, strings.Join(msgs, "; "))
 }
@@ -78,8 +118,8 @@ func (s *TransactionsService) Update(ctx context.Context, id string, p Transacti
 	}
 	var out struct {
 		UpdateTransaction struct {
-			Transaction *Transaction   `json:"transaction"`
-			Errors      []payloadError `json:"errors"`
+			Transaction *Transaction  `json:"transaction"`
+			Errors      payloadErrors `json:"errors"`
 		} `json:"updateTransaction"`
 	}
 	err := s.c.doGraphQLNoRetry(ctx, "Web_TransactionDrawerUpdateTransaction", mutationUpdateTransaction,
@@ -121,8 +161,8 @@ func (s *TransactionsService) SetTags(ctx context.Context, id string, tagIDs []s
 	}
 	var out struct {
 		SetTransactionTags struct {
-			Transaction *Transaction   `json:"transaction"`
-			Errors      []payloadError `json:"errors"`
+			Transaction *Transaction  `json:"transaction"`
+			Errors      payloadErrors `json:"errors"`
 		} `json:"setTransactionTags"`
 	}
 	err := s.c.doGraphQLNoRetry(ctx, "Web_SetTransactionTags", mutationSetTransactionTags,

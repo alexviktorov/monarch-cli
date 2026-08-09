@@ -151,6 +151,22 @@ func TestTransactionsMinMaxClientSideFilter(t *testing.T) {
 	}
 }
 
+func TestTransactionsBareQuerySendsEmptyFilters(t *testing.T) {
+	var vars map[string]any
+	c := gqlServer(t, "GetTransactionsList", txListFixture, &vars)
+	if _, err := c.Transactions.Query().Execute(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// The API expects the filters variable even when empty.
+	f, ok := vars["filters"].(map[string]any)
+	if !ok {
+		t.Fatalf("filters variable missing on a bare query: %v", vars)
+	}
+	if len(f) != 0 {
+		t.Errorf("bare query filters = %v, want empty object", f)
+	}
+}
+
 func TestTransactionsSummary(t *testing.T) {
 	c := gqlServer(t, "GetTransactionsPage", `{"aggregates":[{"summary":
 		{"avg":-12.3,"count":4200,"maxExpense":-900,"sumIncome":100000,"sumExpense":-80000,
@@ -172,7 +188,7 @@ func TestTransactionsSummaryEmptyAggregates(t *testing.T) {
 }
 
 func TestCategoriesList(t *testing.T) {
-	c := gqlServer(t, "GetTransactionCategories", `{"categories":[
+	c := gqlServer(t, "GetCategories", `{"categories":[
 		{"id":"c1","name":"Groceries","order":1,"isDisabled":false,
 		 "group":{"id":"g1","name":"Food","type":"expense"}}
 	]}`, nil)
@@ -188,8 +204,11 @@ func TestCategoriesList(t *testing.T) {
 func TestBudgetsListNegatesSpent(t *testing.T) {
 	var vars map[string]any
 	c := gqlServer(t, "Common_GetJointPlanningData", `{"budgetData":{"monthlyAmountsByCategory":[
-		{"category":{"id":"c1","name":"Groceries"},"monthlyAmounts":[
+		{"category":{"id":"c1","name":"Groceries","group":{"type":"expense"}},"monthlyAmounts":[
 			{"month":"2026-08-01","plannedCashFlowAmount":600,"actualAmount":-420.5,"remainingAmount":179.5}
+		]},
+		{"category":{"id":"c9","name":"Paycheck","group":{"type":"income"}},"monthlyAmounts":[
+			{"month":"2026-08-01","plannedCashFlowAmount":5000,"actualAmount":5000,"remainingAmount":0}
 		]}
 	]}}`, &vars)
 	rows, err := c.Budgets.List(context.Background(), date("2026-08-01"), date("2026-08-31"))
@@ -200,8 +219,14 @@ func TestBudgetsListNegatesSpent(t *testing.T) {
 		t.Errorf("vars = %v", vars)
 	}
 	r := rows[0]
-	if r.CategoryID != "c1" || r.Amount != 600 || r.Spent != 420.5 || r.Remaining != 179.5 {
+	if r.CategoryID != "c1" || r.Amount != 600 || r.Spent != 420.5 || r.Remaining != 179.5 || r.GroupType != "expense" {
 		t.Errorf("row = %+v (Spent must be the negation of actualAmount)", r)
+	}
+	// Income rows must be identifiable so callers can keep them out of
+	// spend totals (their negated actualAmount is NOT spend).
+	income := rows[1]
+	if income.GroupType != "income" || income.Spent != -5000 {
+		t.Errorf("income row = %+v, want GroupType income", income)
 	}
 }
 
