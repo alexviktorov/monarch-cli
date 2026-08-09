@@ -39,6 +39,7 @@ type fakeAPI struct {
 	tagUpdates      []string
 	tagDeletes      []string
 	merges          [][2]string
+	goalMoves       [][3]string
 }
 
 func (f *fakeAPI) ListAccounts(ctx context.Context) ([]*monarch.Account, error) {
@@ -286,6 +287,22 @@ func (f *fakeAPI) GetCreditScoreHistory(ctx context.Context) ([]*monarch.CreditS
 	return []*monarch.CreditScoreSnapshot{{ReportedDate: "2026-08-01", Score: 780}}, nil
 }
 
+func (f *fakeAPI) ContributeToGoal(ctx context.Context, goalID, accountID string, amount float64) (*monarch.GoalMoveResult, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	f.goalMoves = append(f.goalMoves, [3]string{"contribute", goalID, accountID})
+	return &monarch.GoalMoveResult{GoalID: goalID, CurrentBalance: 100 + amount, EventID: "ev1"}, nil
+}
+
+func (f *fakeAPI) WithdrawFromGoal(ctx context.Context, goalID, accountID string, amount float64) (*monarch.GoalMoveResult, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	f.goalMoves = append(f.goalMoves, [3]string{"withdraw", goalID, accountID})
+	return &monarch.GoalMoveResult{GoalID: goalID, CurrentBalance: 100 - amount, EventID: "ev2"}, nil
+}
+
 func (f *fakeAPI) DeleteRule(ctx context.Context, id string) error {
 	if f.err != nil {
 		return f.err
@@ -348,12 +365,15 @@ var readToolNames = []string{
 	"get_transaction_summary", "get_transactions",
 }
 
+var _ = 0 // inventory below includes contribute/withdraw goal writes
+
 var writeToolNames = []string{
-	"bulk_categorize", "create_category", "create_rule", "create_tag",
-	"create_transaction", "delete_category", "delete_rule", "delete_tag",
-	"delete_transaction", "merge_merchants", "set_budget_amount",
-	"set_transaction_splits", "update_category", "update_merchant",
-	"update_rule", "update_tag", "update_transaction",
+	"bulk_categorize", "bulk_update_transactions", "contribute_to_goal",
+	"create_category", "create_rule", "create_tag", "create_transaction",
+	"delete_category", "delete_rule", "delete_tag", "delete_transaction",
+	"merge_merchants", "set_budget_amount", "set_transaction_splits",
+	"update_category", "update_merchant", "update_rule", "update_tag",
+	"update_transaction", "withdraw_from_goal",
 }
 
 func TestMCPToolInventoryReadOnly(t *testing.T) {
@@ -860,6 +880,52 @@ func TestMCPNewWriteConfirmGates(t *testing.T) {
 	}
 }
 
+func TestMCPBulkUpdateTransactions(t *testing.T) {
+	api := &fakeAPI{}
+	cs := startMCP(t, api, true, nil)
+	// Dry-run is the default: no writes.
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "bulk_update_transactions",
+		Arguments: map[string]any{"transaction_ids": []string{"t1", "t2"}, "needs_review": false},
+	})
+	if err != nil || res.IsError {
+		t.Fatalf("%v %s", err, resultText(t, res))
+	}
+	if len(api.updates) != 0 {
+		t.Fatal("dry-run must not write")
+	}
+	raw, _ := json.Marshal(res.StructuredContent)
+	var out bulkUpdateOut
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !out.DryRun || out.Count != 2 || len(out.Planned) != 2 {
+		t.Errorf("out = %+v", out)
+	}
+	// Execute.
+	res, err = cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "bulk_update_transactions",
+		Arguments: map[string]any{"transaction_ids": []string{"t1", "t2"}, "needs_review": false, "dry_run": false},
+	})
+	if err != nil || res.IsError {
+		t.Fatalf("%v %s", err, resultText(t, res))
+	}
+	if len(api.updates) != 2 || api.updates[0].NeedsReview == nil || *api.updates[0].NeedsReview {
+		t.Errorf("updates = %+v", api.updates)
+	}
+	// Nothing-to-change is rejected.
+	res, err = cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "bulk_update_transactions",
+		Arguments: map[string]any{"transaction_ids": []string{"t1"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError {
+		t.Error("bulk update with no fields must be a tool error")
+	}
+}
+
 func TestMCPGetCreditScore(t *testing.T) {
 	cs := startMCP(t, &fakeAPI{}, false, nil)
 	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: "get_credit_score", Arguments: map[string]any{}})
@@ -888,5 +954,41 @@ func TestMCPUpdateTag(t *testing.T) {
 	}
 	if len(api.tagUpdates) != 1 || api.tagUpdates[0] != "g1" {
 		t.Errorf("tagUpdates = %v", api.tagUpdates)
+	}
+}
+
+func TestMCPGoalMovesRequireConfirm(t *testing.T) {
+	api := &fakeAPI{}
+	cs := startMCP(t, api, true, nil)
+	for _, tool := range []string{"contribute_to_goal", "withdraw_from_goal"} {
+		res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+			Name:      tool,
+			Arguments: map[string]any{"goal_id": "g1", "account_id": "a1", "amount": 50.0},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !res.IsError || !strings.Contains(resultText(t, res), "confirm") {
+			t.Errorf("%s without confirm must refuse: %s", tool, resultText(t, res))
+		}
+	}
+	if len(api.goalMoves) != 0 {
+		t.Fatal("no money move without confirm")
+	}
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "contribute_to_goal",
+		Arguments: map[string]any{"goal_id": "g1", "account_id": "a1", "amount": 50.0, "confirm": true},
+	})
+	if err != nil || res.IsError {
+		t.Fatalf("confirmed contribute failed: %v %s", err, resultText(t, res))
+	}
+	if len(api.goalMoves) != 1 || api.goalMoves[0] != [3]string{"contribute", "g1", "a1"} {
+		t.Errorf("goalMoves = %v", api.goalMoves)
+	}
+	raw, _ := json.Marshal(res.StructuredContent)
+	var out goalMoveOut
+	json.Unmarshal(raw, &out)
+	if out.CurrentBalance != 150 {
+		t.Errorf("out = %+v, want balance echo 150", out)
 	}
 }

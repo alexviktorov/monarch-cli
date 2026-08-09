@@ -115,19 +115,22 @@ Claude Desktop (`~/Library/Application Support/Claude/claude_desktop_config.json
 
 ### Writes (off by default)
 
-Seventeen write tools exist: `update_transaction` (category, notes, amount,
+Twenty write tools exist: `update_transaction` (category, notes, amount,
 date, merchant, hide, mark-reviewed, tags), `create_transaction` (manual
-accounts), `delete_transaction` (**confirm**), `bulk_categorize` (up to 25
-per call, **dry-run by default**), `set_transaction_splits` (sum-validated;
-empty list clears), `set_budget_amount` (0 clears), `create_tag` /
-`update_tag` / `delete_tag` (**confirm**), `update_merchant` (rename +
-recurring-stream config), `merge_merchants` (**confirm**; folds a duplicate
-into a target), `create_category` / `update_category` / `delete_category`
-(**confirm**; supports transaction reassignment), and `create_rule` /
-`update_rule` / `delete_rule` (**confirm on delete**; back-applying to
-history requires explicit `apply_to_existing=true`). None are registered
-unless the server is started with *both* the `--allow-writes` flag and
-`MONARCH_MCP_ALLOW_WRITES=1`; a mismatch refuses to start. Register it as a separate server entry and only while you're actively
+accounts), `delete_transaction` (**confirm**), `bulk_categorize` and
+`bulk_update_transactions` (up to 25 per call, **dry-run by default**),
+`set_transaction_splits` (sum-validated; empty list clears),
+`set_budget_amount` (0 clears), `create_tag` / `update_tag` / `delete_tag`
+(**confirm**), `update_merchant` (rename + recurring-stream config),
+`merge_merchants` (**confirm**; folds a duplicate into a target),
+`create_category` / `update_category` / `delete_category` (**confirm**;
+supports transaction reassignment), `create_rule` / `update_rule` /
+`delete_rule` (**confirm on delete**; back-applying to history requires
+explicit `apply_to_existing=true`), and `contribute_to_goal` /
+`withdraw_from_goal` (**confirm**; moves real money, returns the goal's new
+balance). None are registered unless the server is started with *both* the
+`--allow-writes` flag and `MONARCH_MCP_ALLOW_WRITES=1`; a mismatch refuses
+to start. Register it as a separate server entry and only while you're actively
 doing a cleanup session:
 
 ```sh

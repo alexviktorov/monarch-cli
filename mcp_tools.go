@@ -53,6 +53,8 @@ type monarchAPI interface {
 	DeleteTag(ctx context.Context, id string) error
 	MergeMerchants(ctx context.Context, duplicateID, targetID string) error
 	GetCreditScoreHistory(ctx context.Context) ([]*monarch.CreditScoreSnapshot, error)
+	ContributeToGoal(ctx context.Context, goalID, accountID string, amount float64) (*monarch.GoalMoveResult, error)
+	WithdrawFromGoal(ctx context.Context, goalID, accountID string, amount float64) (*monarch.GoalMoveResult, error)
 }
 
 type txQuery struct {
@@ -220,6 +222,14 @@ func (a *liveAPI) MergeMerchants(ctx context.Context, duplicateID, targetID stri
 
 func (a *liveAPI) GetCreditScoreHistory(ctx context.Context) ([]*monarch.CreditScoreSnapshot, error) {
 	return a.c.GetCreditScoreHistory(ctx)
+}
+
+func (a *liveAPI) ContributeToGoal(ctx context.Context, goalID, accountID string, amount float64) (*monarch.GoalMoveResult, error) {
+	return a.c.Goals.Contribute(ctx, goalID, accountID, amount, nil)
+}
+
+func (a *liveAPI) WithdrawFromGoal(ctx context.Context, goalID, accountID string, amount float64) (*monarch.GoalMoveResult, error) {
+	return a.c.Goals.Withdraw(ctx, goalID, accountID, amount, nil)
 }
 
 func (a *liveAPI) GetSummary(ctx context.Context) (*monarch.TransactionSummary, error) {
@@ -1211,6 +1221,66 @@ func (h *toolHandlers) mergeMerchants(ctx context.Context, _ *mcp.CallToolReques
 	return nil, deletedOut{Deleted: true}, nil
 }
 
+// ---- contribute_to_goal / withdraw_from_goal (write) ----
+
+type goalMoveIn struct {
+	GoalID    string  `json:"goal_id" jsonschema:"id from get_goals"`
+	AccountID string  `json:"account_id" jsonschema:"id from get_accounts (the cash source/destination)"`
+	Amount    float64 `json:"amount" jsonschema:"positive amount to move"`
+	Confirm   bool    `json:"confirm" jsonschema:"must be true — this moves real money between the account and the goal"`
+}
+
+type goalMoveOut struct {
+	GoalID         string  `json:"goal_id"`
+	CurrentBalance float64 `json:"current_balance"`
+	EventID        string  `json:"event_id"`
+}
+
+func (h *toolHandlers) contributeToGoal(ctx context.Context, _ *mcp.CallToolRequest, in goalMoveIn) (*mcp.CallToolResult, goalMoveOut, error) {
+	return h.goalMove(ctx, in, false)
+}
+
+func (h *toolHandlers) withdrawFromGoal(ctx context.Context, _ *mcp.CallToolRequest, in goalMoveIn) (*mcp.CallToolResult, goalMoveOut, error) {
+	return h.goalMove(ctx, in, true)
+}
+
+func (h *toolHandlers) goalMove(ctx context.Context, in goalMoveIn, withdraw bool) (*mcp.CallToolResult, goalMoveOut, error) {
+	var zero goalMoveOut
+	if err := h.requireWriteMode(); err != nil {
+		return nil, zero, err
+	}
+	verb := "contribute to"
+	if withdraw {
+		verb = "withdraw from"
+	}
+	if !in.Confirm {
+		return nil, zero, fmt.Errorf("refusing to %s a goal without confirm:true — this moves real money", verb)
+	}
+	if in.GoalID == "" || in.AccountID == "" {
+		return nil, zero, errors.New("goal_id and account_id are required")
+	}
+	if in.Amount <= 0 {
+		return nil, zero, errors.New("amount must be positive")
+	}
+	var res *monarch.GoalMoveResult
+	var err error
+	if withdraw {
+		res, err = h.api.WithdrawFromGoal(ctx, in.GoalID, in.AccountID, in.Amount)
+	} else {
+		res, err = h.api.ContributeToGoal(ctx, in.GoalID, in.AccountID, in.Amount)
+	}
+	if err != nil {
+		return nil, zero, err
+	}
+	tool := "contribute_to_goal"
+	if withdraw {
+		tool = "withdraw_from_goal"
+	}
+	h.logger.Info("write applied", "tool", tool,
+		"goal_id", in.GoalID, "account_id", in.AccountID, "amount", in.Amount)
+	return nil, goalMoveOut{GoalID: res.GoalID, CurrentBalance: res.CurrentBalance, EventID: res.EventID}, nil
+}
+
 // ---- update_transaction (write; registered only when gated on) ----
 
 type updateTransactionIn struct {
@@ -1407,6 +1477,78 @@ func (h *toolHandlers) bulkCategorize(ctx context.Context, _ *mcp.CallToolReques
 			out.Succeeded++
 			h.logger.Info("write applied", "tool", "bulk_categorize",
 				"transaction_id", id, "category_id", in.CategoryID)
+		}
+		out.Results = append(out.Results, res)
+	}
+	return nil, out, nil
+}
+
+// ---- bulk_update_transactions (write) ----
+
+type bulkUpdateIn struct {
+	TransactionIDs  []string `json:"transaction_ids" jsonschema:"ids from get_transactions (max 25 per call)"`
+	Notes           *string  `json:"notes,omitempty" jsonschema:"set notes on all (empty string clears); omit to leave unchanged"`
+	HideFromReports *bool    `json:"hide_from_reports,omitempty" jsonschema:"hide/unhide all from reports; omit to leave unchanged"`
+	NeedsReview     *bool    `json:"needs_review,omitempty" jsonschema:"flag/clear the review flag on all (false = mark reviewed); omit to leave unchanged"`
+	DryRun          *bool    `json:"dry_run,omitempty" jsonschema:"DEFAULTS TO TRUE: preview without writing. Set false explicitly to execute"`
+}
+
+type bulkUpdateOut struct {
+	DryRun    bool             `json:"dry_run"`
+	Fields    []string         `json:"fields"`
+	Count     int              `json:"count"`
+	Planned   []string         `json:"planned,omitempty"`
+	Results   []bulkItemResult `json:"results,omitempty"`
+	Succeeded int              `json:"succeeded,omitempty"`
+	Failed    int              `json:"failed,omitempty"`
+}
+
+// bulkUpdateTransactions applies the SAME notes/hide/needs-review change to
+// many transactions. Category bulk-recat is bulk_categorize's job (it
+// validates the target category); this covers the other common bulk chores,
+// especially mark-reviewed across a filtered set.
+func (h *toolHandlers) bulkUpdateTransactions(ctx context.Context, _ *mcp.CallToolRequest, in bulkUpdateIn) (*mcp.CallToolResult, bulkUpdateOut, error) {
+	var zero bulkUpdateOut
+	if err := h.requireWriteMode(); err != nil {
+		return nil, zero, err
+	}
+	if len(in.TransactionIDs) == 0 {
+		return nil, zero, errors.New("transaction_ids is required")
+	}
+	if len(in.TransactionIDs) > 25 {
+		return nil, zero, fmt.Errorf("too many transactions (%d): max 25 per call — chunk larger sets", len(in.TransactionIDs))
+	}
+	patch := monarch.TransactionUpdate{Notes: in.Notes, HideFromReports: in.HideFromReports, NeedsReview: in.NeedsReview}
+	var fields []string
+	if in.Notes != nil {
+		fields = append(fields, "notes")
+	}
+	if in.HideFromReports != nil {
+		fields = append(fields, "hide_from_reports")
+	}
+	if in.NeedsReview != nil {
+		fields = append(fields, "needs_review")
+	}
+	if len(fields) == 0 {
+		return nil, zero, errors.New("nothing to change: provide notes, hide_from_reports, and/or needs_review")
+	}
+
+	dryRun := in.DryRun == nil || *in.DryRun
+	out := bulkUpdateOut{DryRun: dryRun, Fields: fields, Count: len(in.TransactionIDs)}
+	if dryRun {
+		out.Planned = in.TransactionIDs
+		return nil, out, nil
+	}
+	for _, id := range in.TransactionIDs {
+		res := bulkItemResult{TransactionID: id}
+		if err := h.api.UpdateTransaction(ctx, id, patch); err != nil {
+			res.Error = redactErr(err).Error()
+			out.Failed++
+		} else {
+			res.OK = true
+			out.Succeeded++
+			h.logger.Info("write applied", "tool", "bulk_update_transactions",
+				"transaction_id", id, "fields", fields)
 		}
 		out.Results = append(out.Results, res)
 	}
@@ -1971,6 +2113,11 @@ func buildMCPServer(api monarchAPI, writes bool, logger *slog.Logger, limits *to
 			Annotations: &mcp.ToolAnnotations{DestructiveHint: ptr(true), IdempotentHint: true, OpenWorldHint: ptr(false)},
 		}, wrap(limits, h.bulkCategorize))
 		mcp.AddTool(server, &mcp.Tool{
+			Name:        "bulk_update_transactions",
+			Description: "Apply the same notes/hide-from-reports/needs-review change to up to 25 transactions (e.g. mark a filtered set reviewed). DRY-RUN BY DEFAULT. For bulk recategorization use bulk_categorize instead.",
+			Annotations: &mcp.ToolAnnotations{DestructiveHint: ptr(true), IdempotentHint: true, OpenWorldHint: ptr(false)},
+		}, wrap(limits, h.bulkUpdateTransactions))
+		mcp.AddTool(server, &mcp.Tool{
 			Name:        "set_transaction_splits",
 			Description: "REPLACE the full split set of a transaction (empty splits list clears all splits). Split amounts must sum exactly to the parent's amount — validated before writing.",
 			Annotations: &mcp.ToolAnnotations{DestructiveHint: ptr(true), IdempotentHint: true, OpenWorldHint: ptr(false)},
@@ -2040,6 +2187,16 @@ func buildMCPServer(api monarchAPI, writes bool, logger *slog.Logger, limits *to
 			Description: "Merge a duplicate merchant into a target: the duplicate's transactions and rules move to the target and the duplicate is removed. Use get_merchants to find the ids. Requires confirm:true.",
 			Annotations: &mcp.ToolAnnotations{DestructiveHint: ptr(true), IdempotentHint: false, OpenWorldHint: ptr(false)},
 		}, wrap(limits, h.mergeMerchants))
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "contribute_to_goal",
+			Description: "Move money from an account into a savings goal. Requires confirm:true. Returns the goal's new balance. Use get_goals and get_accounts for ids.",
+			Annotations: &mcp.ToolAnnotations{DestructiveHint: ptr(true), IdempotentHint: false, OpenWorldHint: ptr(false)},
+		}, wrap(limits, h.contributeToGoal))
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "withdraw_from_goal",
+			Description: "Move money from a savings goal back to an account. Requires confirm:true. Returns the goal's new balance.",
+			Annotations: &mcp.ToolAnnotations{DestructiveHint: ptr(true), IdempotentHint: false, OpenWorldHint: ptr(false)},
+		}, wrap(limits, h.withdrawFromGoal))
 	}
 	return server
 }

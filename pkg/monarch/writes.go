@@ -1062,3 +1062,79 @@ func (s *MerchantsService) Merge(ctx context.Context, duplicateID, targetID stri
 	}
 	return nil
 }
+
+// ---- goal contributions / withdrawals ----
+
+// GoalMoveResult echoes the goal's post-move state so callers can verify.
+type GoalMoveResult struct {
+	GoalID         string
+	CurrentBalance float64
+	EventID        string
+}
+
+const mutationContributeGoal = `mutation Common_ContributeToSavingsGoal($input: CreateSavingsGoalContributionInput!) {
+  createSavingsGoalContribution(input: $input) {
+    goalEvent { id goal { id currentBalance } }
+  }
+}`
+
+const mutationWithdrawGoal = `mutation Common_WithdrawFromSavingsGoal($input: CreateSavingsGoalWithdrawalInput!) {
+  createSavingsGoalWithdrawal(input: $input) {
+    goalEvent { id goal { id currentBalance } }
+  }
+}`
+
+// goalMoveResult is the shared decode/guard for both mutations. These
+// mutations are LENIENT — a bad goal or account id returns HTTP 200 with a
+// null goalEvent and moves nothing — so a null event MUST be treated as
+// failure (verified live 2026-08-09).
+type goalMovePayload struct {
+	GoalEvent *struct {
+		ID   string `json:"id"`
+		Goal *struct {
+			ID             string  `json:"id"`
+			CurrentBalance float64 `json:"currentBalance"`
+		} `json:"goal"`
+	} `json:"goalEvent"`
+}
+
+func (s *GoalsService) move(ctx context.Context, op, query, root, goalID, accountID string, amount float64, date *time.Time) (*GoalMoveResult, error) {
+	if err := s.c.requireWrites(); err != nil {
+		return nil, err
+	}
+	if goalID == "" || accountID == "" {
+		return nil, errors.New("monarch: goal move: goal id and account id required")
+	}
+	if amount <= 0 {
+		return nil, errors.New("monarch: goal move: amount must be positive")
+	}
+	input := map[string]any{"id": goalID, "accountId": accountID, "amount": amount}
+	if date != nil {
+		input["date"] = date.Format("2006-01-02")
+	}
+	out := map[string]goalMovePayload{}
+	if err := s.c.doGraphQLNoRetry(ctx, op, query, map[string]any{"input": input}, &out); err != nil {
+		return nil, err
+	}
+	payload := out[root]
+	if payload.GoalEvent == nil {
+		return nil, fmt.Errorf("monarch: %s: no goal event returned — check the goal id and account id (the API silently no-ops on unknown ids)", op)
+	}
+	res := &GoalMoveResult{GoalID: goalID, EventID: payload.GoalEvent.ID}
+	if payload.GoalEvent.Goal != nil {
+		res.CurrentBalance = payload.GoalEvent.Goal.CurrentBalance
+	}
+	return res, nil
+}
+
+// Contribute moves `amount` from the account into the goal. Requires
+// WithWritesEnabled.
+func (s *GoalsService) Contribute(ctx context.Context, goalID, accountID string, amount float64, date *time.Time) (*GoalMoveResult, error) {
+	return s.move(ctx, "Common_ContributeToSavingsGoal", mutationContributeGoal, "createSavingsGoalContribution", goalID, accountID, amount, date)
+}
+
+// Withdraw moves `amount` from the goal back to the account. Requires
+// WithWritesEnabled.
+func (s *GoalsService) Withdraw(ctx context.Context, goalID, accountID string, amount float64, date *time.Time) (*GoalMoveResult, error) {
+	return s.move(ctx, "Common_WithdrawFromSavingsGoal", mutationWithdrawGoal, "createSavingsGoalWithdrawal", goalID, accountID, amount, date)
+}
