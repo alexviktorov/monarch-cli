@@ -1,0 +1,18 @@
+version: 2
+
+# Keep the SHA-pinned GitHub Actions current: without this, the immutable
+# pins in .github/workflows/ would freeze and miss the actions' own security
+# patches. Scoped to github-actions ONLY — Go modules stay under the manual
+# dependency policy in CLAUDE.md, and CI's govulncheck already fails the build
+# on any vulnerable module we actually call.
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
+    groups:
+      actions:
+        patterns:
+          - "*"

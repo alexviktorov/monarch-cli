@@ -21,7 +21,8 @@ jobs:
       # Rolling ~35-day window (each CI run starts stateless).
       MONARCH_UPSTREAM_SINCE_DAYS: '35'
     steps:
-      - uses: actions/checkout@v4
+      # SHA-pinned (see ci.yml); Dependabot keeps it current.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Run drift check
         id: check
         run: |
