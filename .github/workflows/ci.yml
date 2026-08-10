@@ -16,7 +16,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          # Track the latest patched toolchain, NOT the go.mod floor. With
+          # go-version-file, setup-go installs the exact `go 1.25.0` directive —
+          # the unpatched .0 release — and govulncheck then (correctly) flags
+          # every stdlib CVE fixed in later 1.25.x patches, reddening CI on
+          # green code. 'stable' keeps the compiler fully patched so govulncheck
+          # stays a meaningful signal.
+          go-version: stable
           cache: true
       - name: gofmt
         run: test -z "$(gofmt -l .)" || { echo 'gofmt needed:'; gofmt -l .; exit 1; }

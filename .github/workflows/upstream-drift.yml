@@ -27,9 +27,13 @@ jobs:
         run: |
           set +e
           bash scripts/upstream-check.sh | tee drift-report.txt
-          echo "flagged=$?" >> "$GITHUB_OUTPUT"
+          # PIPESTATUS[0] is the SCRIPT's exit code; plain $? would capture
+          # tee's (~always 0), so drift would never actually flag.
+          echo "flagged=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
       - name: Open issue on auth-flagged drift
         if: steps.check.outputs.flagged != '0'
         # Body comes from a FILE, never interpolated into the shell — the
-        # report contains untrusted upstream commit text.
-        run: gh issue create --title "Upstream drift: auth-related changes detected" --body-file drift-report.txt --label upstream-drift || true
+        # report contains untrusted upstream commit text. Block scalar (|) so
+        # the colon in the --title argument isn't parsed as a YAML mapping.
+        run: |
+          gh issue create --title "Upstream drift: auth-related changes detected" --body-file drift-report.txt --label upstream-drift || true
