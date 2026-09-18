@@ -2,11 +2,16 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"flag"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"monarch-cli/pkg/monarch"
 )
@@ -177,4 +182,160 @@ func TestRenderNetworth(t *testing.T) {
 	var buf bytes.Buffer
 	renderNetworth(&buf, snaps)
 	checkGolden(t, "networth.txt", buf.Bytes())
+}
+
+// ---- hostile remote text (CWE-150) ----
+
+type renderCase struct {
+	name   string
+	render func(w io.Writer)
+}
+
+// renderCases builds one fixture per human-readable renderer with s in every
+// remote-origin string field it prints.
+func renderCases(t *testing.T, s string) []renderCase {
+	t.Helper()
+	day := mustDate(t, "2026-08-01")
+	cat := &monarch.CategoryRef{ID: s, Name: s}
+	merch := &monarch.MerchantRef{ID: s, Name: s}
+	acct := &monarch.AccountRef{ID: s, DisplayName: s}
+	tags := []*monarch.Tag{{ID: s, Name: s}, {ID: s, Name: s}}
+	full := monarch.Transaction{ID: s, Date: day, Amount: -5, PlaidName: s, Notes: s,
+		Merchant: merch, Category: cat, Account: acct, Tags: tags}
+	// No merchant: the raw statement text stands in for it.
+	bare := monarch.Transaction{ID: s, Date: day, Amount: -5, PlaidName: s}
+	hide := true
+	return []renderCase{
+		{"accounts", func(w io.Writer) {
+			renderAccounts(w, []*monarch.Account{{ID: s, DisplayName: s, DisplayLastUpdatedAt: day,
+				Type:        &monarch.AccountType{Name: s, Display: s},
+				Institution: &monarch.InstitutionRef{Name: s}}}, true)
+		}},
+		{"transactions", func(w io.Writer) {
+			renderTransactions(w, &monarch.TransactionList{TotalCount: 2,
+				Transactions: []*monarch.Transaction{&full, &bare}})
+		}},
+		{"summary", func(w io.Writer) {
+			renderSummary(w, &monarch.TransactionSummary{Count: 1, First: s, Last: s})
+		}},
+		{"budget", func(w io.Writer) {
+			renderBudget(w, []*monarch.BudgetRow{
+				{CategoryID: s, Category: cat, GroupType: "expense", Month: s, Amount: 1},
+				{CategoryID: s, GroupType: "expense", Month: s, Amount: 1}, // no category: the raw id is shown
+			}, "August 2026")
+		}},
+		{"cashflow", func(w io.Writer) {
+			renderCashflow(w, &monarch.Cashflow{
+				ByCategory: []*monarch.CashflowCategory{{Category: cat, Amount: -1}},
+				ByMerchant: []*monarch.CashflowMerchant{{Merchant: merch, Amount: -1}},
+			}, day.Time, day.Time, 10)
+		}},
+		{"categories", func(w io.Writer) {
+			renderCategories(w, []*monarch.Category{{ID: s, Name: s,
+				Group: &monarch.CategoryGroup{ID: s, Name: s, Type: s}}})
+		}},
+		{"recurring", func(w io.Writer) {
+			renderRecurring(w, []*monarch.RecurringItem{{Merchant: merch, Amount: -1,
+				Frequency: s, NextDate: day, Category: cat}})
+		}},
+		{"networth", func(w io.Writer) {
+			renderNetworth(w, []*monarch.AccountSnapshot{{Month: s, Type: s, TotalValue: 1}})
+		}},
+		{"transaction detail", func(w io.Writer) {
+			renderTransactionDetail(w, &monarch.TransactionDetail{Transaction: full,
+				Splits: []*monarch.TransactionSplit{{ID: s, Amount: -1, Notes: s, Merchant: merch, Category: cat}}})
+		}},
+		{"transaction detail without merchant", func(w io.Writer) {
+			renderTransactionDetail(w, &monarch.TransactionDetail{Transaction: bare})
+		}},
+		{"holdings", func(w io.Writer) {
+			renderHoldings(w, []*monarch.Holding{{ID: s, Quantity: 1,
+				Security: &monarch.Security{ID: s, Name: s, Type: s, Ticker: s}}})
+		}},
+		{"rules", func(w io.Writer) {
+			renderRules(w, []*monarch.Rule{{ID: s,
+				// Not valid JSON, so the raw bytes are what gets displayed.
+				MerchantCriteria: json.RawMessage(s), AmountCriteria: json.RawMessage(s),
+				CategoryIDs: []string{s}, SetCategoryAction: cat, SetMerchantAction: merch,
+				AddTagsAction: tags, SetHideFromReportsAction: &hide,
+				ReviewStatusAction: s, LastAppliedAt: s}})
+		}},
+		{"goals", func(w io.Writer) {
+			renderGoals(w, []*monarch.Goal{{ID: s, Type: s, Name: s, Status: s,
+				TargetDate: s, ForecastedCompletionDate: s}})
+		}},
+		{"institutions", func(w io.Writer) {
+			renderInstitutions(w, []*monarch.Credential{{ID: s, DataProvider: s,
+				Institution: &monarch.Institution{ID: s, Name: s, URL: s}}})
+		}},
+	}
+}
+
+// Whatever a remote field holds, a renderer may hand the terminal nothing but
+// printable text and its own line breaks — and exactly as many lines as the
+// same data produces with harmless text, so no row can be forged or hidden.
+func TestRenderersNeutralizeHostileRemoteText(t *testing.T) {
+	hostile := "evil\x1b[2J\r\n2026-01-01\tFORGED\a" + c1CSI + bidiOverride +
+		zeroWidthSpace + lineSeparator + "\xff end"
+	benign := renderCases(t, "x")
+	for i, c := range renderCases(t, hostile) {
+		t.Run(c.name, func(t *testing.T) {
+			var got, ref bytes.Buffer
+			c.render(&got)
+			benign[i].render(&ref)
+			out := got.String()
+
+			if !utf8.ValidString(out) {
+				t.Errorf("output is not valid UTF-8: %q", out)
+			}
+			for _, r := range out {
+				if r == '\n' { // the renderer's own line breaks
+					continue
+				}
+				if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || r == 0x2028 || r == 0x2029 {
+					t.Errorf("raw %U reached the output: %q", r, out)
+					break
+				}
+			}
+			if !strings.Contains(out, `evil\x1b[2J`) {
+				t.Errorf("hostile text is not shown as a visible escape: %q", out)
+			}
+			if g, w := strings.Count(out, "\n"), strings.Count(ref.String(), "\n"); g != w {
+				t.Errorf("line count = %d, want %d (as with harmless text): %q", g, w, out)
+			}
+		})
+	}
+}
+
+func TestRenderTransactionDetailEscapesRemoteText(t *testing.T) {
+	d := &monarch.TransactionDetail{
+		Transaction: monarch.Transaction{
+			ID: "t1", Date: mustDate(t, "2026-08-01"), Amount: -52.5,
+			PlaidName: "WHOLEFDS\x1b[2J",
+			Notes:     "line one\nTransaction t2\x1b[1A",
+			Merchant:  &monarch.MerchantRef{Name: "Whole" + bidiOverride + "Foods"},
+			Category:  &monarch.CategoryRef{ID: "c1\r", Name: "Groceries\t"},
+			Account:   &monarch.AccountRef{DisplayName: "Checking\r"},
+			Tags:      []*monarch.Tag{{Name: "a\a"}, {Name: "b"}},
+		},
+		Splits: []*monarch.TransactionSplit{{ID: "s1\n", Amount: -10,
+			Merchant: &monarch.MerchantRef{Name: "M\x1b"}, Category: &monarch.CategoryRef{Name: "C\x1b"}}},
+	}
+	var buf bytes.Buffer
+	renderTransactionDetail(&buf, d)
+	want := `Transaction t1
+  Date:      2026-08-01
+  Amount:    -$52.50
+  Merchant:  Whole\u202eFoods
+  Statement: WHOLEFDS\x1b[2J
+  Category:  Groceries\t (c1\r)
+  Account:   Checking\r
+  Notes:     line one\nTransaction t2\x1b[1A
+  Tags:      a\a, b
+  Splits:
+    s1\n  -$10.00  M\x1b  C\x1b
+`
+	if got := buf.String(); got != want {
+		t.Errorf("output mismatch\n--- got ---\n%q\n--- want ---\n%q", got, want)
+	}
 }

@@ -6,8 +6,11 @@ import (
 	"io"
 	"math"
 	"os"
+	"strconv"
 	"strings"
 	"text/tabwriter"
+	"unicode"
+	"unicode/utf8"
 )
 
 // printJSON pretty-prints any value as JSON to stdout. An encode/write
@@ -63,25 +66,72 @@ func newTable(out io.Writer, headers ...string) *table {
 	return t
 }
 
+// unsafeRune reports whether r must not reach a terminal verbatim: C0/C1
+// controls and DEL (ESC, CR, LF, TAB, …), format characters (category Cf:
+// bidi overrides and isolates, zero-width characters, BOM, tags), and the
+// line/paragraph separators.
+func unsafeRune(r rune) bool {
+	return unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || r == 0x2028 || r == 0x2029
+}
+
+// sanitize makes remote text safe to print for a human: every unsafeRune
+// becomes its visible Go escape (\x1b, \n, \u202e) and every invalid UTF-8
+// byte becomes \xNN, so tampering shows instead of acting on the terminal.
+// All other text is returned byte-for-byte. JSON and CSV output do their
+// own escaping and must not go through here.
+func sanitize(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		switch {
+		case r == utf8.RuneError && size == 1: // invalid byte, not a real U+FFFD
+			fmt.Fprintf(&b, `\x%02x`, s[i])
+		case unsafeRune(r):
+			q := strconv.QuoteRune(r)
+			b.WriteString(q[1 : len(q)-1])
+		default:
+			b.WriteString(s[i : i+size])
+		}
+		i += size
+	}
+	return b.String()
+}
+
+// row sanitizes each cell before joining: the only raw tabs and newlines
+// the tabwriter sees are this function's own separators, so a cell can
+// neither forge a row nor (via 0xff, tabwriter's escape marker) swallow one.
 func (t *table) row(cells ...string) {
-	fmt.Fprintln(t.w, strings.Join(cells, "\t"))
+	safe := make([]string, len(cells))
+	for i, c := range cells {
+		safe[i] = sanitize(c)
+	}
+	fmt.Fprintln(t.w, strings.Join(safe, "\t"))
 }
 
 func (t *table) flush() {
 	t.w.Flush()
 }
 
+// truncate caps s at n bytes. The cut backs up to a rune boundary: half a
+// rune is invalid UTF-8, which sanitize would then print as \xNN noise in
+// an otherwise legitimate name.
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
+	cut, tail := n-1, "…"
 	if n <= 1 {
-		return s[:n]
+		cut, tail = n, ""
 	}
-	return s[:n-1] + "…"
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + tail
 }
 
+// fatal sanitizes the finished message, not the format: errors such as
+// GraphQLError carry server-supplied text.
 func fatal(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, "error: "+format+"\n", args...)
+	fmt.Fprintf(os.Stderr, "error: %s\n", sanitize(fmt.Sprintf(format, args...)))
 	os.Exit(1)
 }

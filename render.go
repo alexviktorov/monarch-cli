@@ -91,7 +91,7 @@ func renderTransactions(w io.Writer, list *monarch.TransactionList) {
 }
 
 func renderSummary(w io.Writer, s *monarch.TransactionSummary) {
-	fmt.Fprintf(w, "Transactions: %d (%s to %s)\n", s.Count, s.First, s.Last)
+	fmt.Fprintf(w, "Transactions: %d (%s to %s)\n", s.Count, sanitize(s.First), sanitize(s.Last))
 	fmt.Fprintf(w, "Total income:  %s\n", money(s.SumIncome))
 	fmt.Fprintf(w, "Total expense: %s\n", money(s.SumExpense))
 	fmt.Fprintf(w, "Average:       %s   Largest expense: %s\n", money(s.Avg), money(s.MaxExpense))
@@ -368,27 +368,29 @@ func csvBudget(w io.Writer, rows []*monarch.BudgetRow) error {
 
 // ---- new read domains ----
 
+// renderTransactionDetail prints outside a table, so it has no row() choke
+// point: every remote string is sanitized where it is printed.
 func renderTransactionDetail(w io.Writer, d *monarch.TransactionDetail) {
-	fmt.Fprintf(w, "Transaction %s\n", d.ID)
+	fmt.Fprintf(w, "Transaction %s\n", sanitize(d.ID))
 	fmt.Fprintf(w, "  Date:      %s\n", d.Date.Format("2006-01-02"))
 	fmt.Fprintf(w, "  Amount:    %s\n", money(d.Amount))
-	fmt.Fprintf(w, "  Merchant:  %s\n", txMerchant(&d.Transaction))
+	fmt.Fprintf(w, "  Merchant:  %s\n", sanitize(txMerchant(&d.Transaction)))
 	if d.PlaidName != "" {
-		fmt.Fprintf(w, "  Statement: %s\n", d.PlaidName)
+		fmt.Fprintf(w, "  Statement: %s\n", sanitize(d.PlaidName))
 	}
 	if d.Category != nil {
-		fmt.Fprintf(w, "  Category:  %s (%s)\n", d.Category.Name, d.Category.ID)
+		fmt.Fprintf(w, "  Category:  %s (%s)\n", sanitize(d.Category.Name), sanitize(d.Category.ID))
 	}
 	if d.Account != nil {
-		fmt.Fprintf(w, "  Account:   %s\n", d.Account.DisplayName)
+		fmt.Fprintf(w, "  Account:   %s\n", sanitize(d.Account.DisplayName))
 	}
 	if d.Notes != "" {
-		fmt.Fprintf(w, "  Notes:     %s\n", d.Notes)
+		fmt.Fprintf(w, "  Notes:     %s\n", sanitize(d.Notes))
 	}
 	if len(d.Tags) > 0 {
 		var names []string
 		for _, t := range d.Tags {
-			names = append(names, t.Name)
+			names = append(names, sanitize(t.Name))
 		}
 		fmt.Fprintf(w, "  Tags:      %s\n", strings.Join(names, ", "))
 	}
@@ -418,7 +420,8 @@ func renderTransactionDetail(w io.Writer, d *monarch.TransactionDetail) {
 			if sp.Category != nil {
 				cat = sp.Category.Name
 			}
-			fmt.Fprintf(w, "    %s  %s  %s  %s\n", sp.ID, money(sp.Amount), truncate(name, 24), truncate(cat, 20))
+			fmt.Fprintf(w, "    %s  %s  %s  %s\n", sanitize(sp.ID), money(sp.Amount),
+				sanitize(truncate(name, 24)), sanitize(truncate(cat, 20)))
 		}
 	}
 }

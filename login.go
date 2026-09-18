@@ -109,7 +109,7 @@ func cmdLogin(args []string) {
 	// successful login.
 	fmt.Printf("Logged in as %s.\n", e)
 	if s := client.Session(); s != nil && s.TokenExpiration != "" {
-		fmt.Fprintf(os.Stderr, "warning: server reported a token expiry (%s) — trusted-device may not have been honored; expect to re-login\n", s.TokenExpiration)
+		fmt.Fprintf(os.Stderr, "warning: server reported a token expiry (%s) — trusted-device may not have been honored; expect to re-login\n", sanitize(s.TokenExpiration))
 	}
 }
 
@@ -145,10 +145,11 @@ func cmdWhoami(args []string) {
 	// the server.
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
+	// Both branches print server-supplied text (error message, email).
 	if id, err := client.Ping(ctx); err != nil {
-		fmt.Printf("Server check: FAILED (%v)\n", err)
+		fmt.Printf("Server check: FAILED (%s)\n", sanitize(err.Error()))
 		os.Exit(1)
 	} else {
-		fmt.Printf("Server check: OK (%s)\n", id.Email)
+		fmt.Printf("Server check: OK (%s)\n", sanitize(id.Email))
 	}
 }
